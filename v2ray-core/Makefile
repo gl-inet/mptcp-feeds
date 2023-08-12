@@ -38,7 +38,7 @@ endef
 
 define Package/v2ray-core
   $(call Package/v2ray/template)
-  DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle
+  DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle +kmod-nft-tproxy +kmod-nft-socket +bind-dig
 endef
 
 define Package/v2ray-example
@@ -85,9 +85,12 @@ define Package/v2ray-core/install
 	$(call GoPackage/Package/Install/Bin,$(PKG_INSTALL_DIR))
 	$(INSTALL_DIR) $(1)/usr/bin/
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/main $(1)/usr/bin/v2ray
+	$(INSTALL_BIN) $(CURDIR)/files/mptcp-proxy.nft $(1)/usr/bin/
+	$(INSTALL_BIN) $(CURDIR)/files/proxy-route.sh $(1)/usr/bin/
 
 	$(INSTALL_DIR) $(1)/etc/v2ray/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/config.json $(1)/etc/v2ray/
+	$(INSTALL_DATA) $(CURDIR)/files/*.cfg $(1)/etc/v2ray/
 
 	$(INSTALL_DIR) $(1)/etc/config/
 	$(INSTALL_CONF) $(CURDIR)/files/v2ray.conf $(1)/etc/config/v2ray
