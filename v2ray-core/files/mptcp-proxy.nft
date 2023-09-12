@@ -13,6 +13,7 @@ table inet mproxy {
     chain prerouting {
         type filter hook prerouting priority 0;
         ip daddr $BYPASS_IP return
+        #udp  dport  53 return
         meta l4proto $PROXY_PROTO mark set $PROXY_MARK tproxy ip to 127.0.0.1:$PROXY_PORT accept
     }
 
@@ -31,6 +32,7 @@ flush table inet mpass
 table inet mpass {
     chain divert {
         type filter hook prerouting priority -150;
+        #udp  dport  53 return
         meta l4proto tcp socket transparent 1 meta mark set $PROXY_MARK accept
     }
 }

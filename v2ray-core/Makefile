@@ -26,6 +26,8 @@ GO_PKG_LDFLAGS_X:= \
 	$(GO_PKG).build=OpenWrt \
 	$(GO_PKG).version=$(PKG_VERSION)
 
+PKG_BUILD_DEPENDS:=lua/host
+
 include $(INCLUDE_DIR)/package.mk
 include ../lang/golang/golang-package.mk
 
@@ -77,36 +79,40 @@ define Package/v2ray-extra/description
 endef
 
 define Package/v2ray-core/conffiles
-/etc/config/v2ray
-/etc/v2ray/
+/etc/config/mptun
+/etc/mptun/
 endef
 
 define Package/v2ray-core/install
 	$(call GoPackage/Package/Install/Bin,$(PKG_INSTALL_DIR))
 	$(INSTALL_DIR) $(1)/usr/bin/
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/main $(1)/usr/bin/v2ray
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/main $(1)/usr/bin/mptun
 	$(INSTALL_BIN) $(CURDIR)/files/mptcp-proxy.nft $(1)/usr/bin/
 	$(INSTALL_BIN) $(CURDIR)/files/proxy-route.sh $(1)/usr/bin/
 
-	$(INSTALL_DIR) $(1)/etc/v2ray/
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/config.json $(1)/etc/v2ray/
-	$(INSTALL_DATA) $(CURDIR)/files/*.cfg $(1)/etc/v2ray/
+	$(INSTALL_DIR) $(1)/etc/mptun/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/config.json $(1)/etc/mptun/
+	$(INSTALL_DATA) $(CURDIR)/files/*.cfg $(1)/etc/mptun/
 
 	$(INSTALL_DIR) $(1)/etc/config/
-	$(INSTALL_CONF) $(CURDIR)/files/v2ray.conf $(1)/etc/config/v2ray
+	$(INSTALL_CONF) $(CURDIR)/files/mptun.conf $(1)/etc/config/mptun
 	$(INSTALL_DIR) $(1)/etc/init.d/
-	$(INSTALL_BIN) $(CURDIR)/files/v2ray.init $(1)/etc/init.d/v2ray
+	$(INSTALL_BIN) $(CURDIR)/files/mptun.init $(1)/etc/init.d/mptun
+
+	$(INSTALL_DIR) $(1)/usr/lib/oui-httpd/rpc
+	$(CP) $(CURDIR)/files/mptun.lua $(1)/usr/lib/oui-httpd/rpc/mptun
+	$(STAGING_DIR_HOSTPKG)/bin/luac -o $(1)/usr/lib/oui-httpd/rpc/mptun $(1)/usr/lib/oui-httpd/rpc/mptun
 endef
 
 define Package/v2ray-example/install
-	$(INSTALL_DIR) $(1)/etc/v2ray/
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/vpoint_socks_vmess.json $(1)/etc/v2ray/
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/vpoint_vmess_freedom.json $(1)/etc/v2ray/
+	$(INSTALL_DIR) $(1)/etc/mptun/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/vpoint_socks_vmess.json $(1)/etc/mptun/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/vpoint_vmess_freedom.json $(1)/etc/mptun/
 endef
 
 define Package/v2ray-extra/install
-	$(INSTALL_DIR) $(1)/usr/share/v2ray/
-	$(CP) $(PKG_BUILD_DIR)/release/extra/* $(1)/usr/share/v2ray/
+	$(INSTALL_DIR) $(1)/usr/share/mptun/
+	$(CP) $(PKG_BUILD_DIR)/release/extra/* $(1)/usr/share/mptun/
 endef
 
 $(eval $(call BuildPackage,v2ray-core))
