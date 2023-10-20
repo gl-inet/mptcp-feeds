@@ -1,0 +1,28 @@
+{
+    "reverse": {
+        "portals": [
+            {
+                "tag": "router.mynet",
+                "domain": "router.mynet.luochongjun.goodcloud"
+            }
+        ]
+    },
+    "routing": {
+        "rules": [
+            {
+                "type": "field",
+                "ip": [
+                    "192.168.8.0/24"
+                ],
+                "outboundTag": "router.mynet"
+            },
+            {
+                "type": "field",
+                "domains": [
+                    "full:router.mynet.luochongjun.goodcloud"
+                ],
+                "outboundTag": "router.mynet"
+            }
+        ]
+    }
+}
