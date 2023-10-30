@@ -13,20 +13,6 @@ local M = {}
 
 local ERR_PARAMETER_TYPE = 1
 
-
---[[
-    @method-type: call
-    @method-name: get_config
-    @method-desc: get the current configuration
-
-    @out bool enable  whether to enable
-
-    @in-example: {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","get_config"]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"enable": true}}
- --]]
- M.get_config = function()
-    local c = uci.cursor()
-
 --[[
     @method-type: call
     @method-name: set_config
