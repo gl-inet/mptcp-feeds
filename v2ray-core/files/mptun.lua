@@ -8,6 +8,7 @@ local fs = require "oui.fs"
 local ubus = require "oui.ubus"
 local kmwan = require "gl.kmwan"
 local utils = require "oui.utils"
+local cjson = require "cjson"
 
 local M = {}
 
@@ -30,7 +31,7 @@ function M.set_config(params)
     local c = uci.cursor()
     local enable = params.enable
     local mode = params.mode or tonumber(c:get("mptun", "global", "mode"))
-    local node_name = params.node_name or c:get("mptun", "global", "node") or "default"
+    local node_name = params.node_name or c:get("mptun", "global", "node") or "unknown"
     local interfaces = params.mptun_interfaces or {}
 
     if enable == nil then
@@ -74,6 +75,7 @@ function M.set_config(params)
 
     if enable then
         ngx.timer.at(2.0, function()
+            ngx.pipe.spawn({"/usr/bin/parse_mpcfg", node_name}):wait()
             ngx.pipe.spawn({"/etc/init.d/mpifd", "stop"}):wait()
             ngx.pipe.spawn({"/etc/init.d/mptun", "stop"}):wait()
             ngx.pipe.spawn({"/etc/init.d/kmwan", "stop"}):wait()
@@ -142,9 +144,15 @@ end
     @out array nodes: "node list",
 ]]
 function M.get_node_list()
-    local nodes = (ubus.call("gl-cloud", "mptun") or {}).nodes or {}
+    ubus.call("gl-cloud", "mpnodes")
+    local data = {}
 
-    return {nodes = nodes}
+    if fs.access('/etc/mptun/nodelist') then
+        data = utils.readfile("/etc/mptun/nodelist")
+        data = cjson.decode(data)
+    end
+
+    return {nodes = data}
 end
 
 return M
