@@ -35,24 +35,51 @@ EOF
 	#ln -s /usr/bin/mptcp-proxy.nft /etc/nftables.d
 }
 
+format_udp_cfg() {
+	local FILE="$2"
+	local interface="$(jsonfilter -q -i $1 -e  '@["outbounds"][0].settings.vnext[0].udptun.interface')"
+	local peers="$(jsonfilter -q -i $1 -e  '@["outbounds"][0].settings.vnext[0].udptun.peers')"
+	[ -z "$interface" -o -z "$peers" ] && return 1
+
+	eval $(echo $interface|jsonfilter -q -e 'Address=@.Address' -e 'PrivateKey=@.PrivateKey')
+cat >$FILE <<EOF
+[Interface]
+PrivateKey=$PrivateKey
+EOF
+	local i=0
+	while true;do
+		local peer=$(echo $peers|jsonfilter -q -e "@[$i]")
+		[ -z "$peer" ] &&  break
+		let i=i+1;
+		eval $(echo $peer|jsonfilter -q -e 'Endpoint=@.Endpoint' -e 'AllowedIPs=@.AllowedIPs' \
+		 -e 'PersistentKeepalive=@.PersistentKeepalive' -e 'PublicKey=@.PublicKey')
+cat >>$FILE <<EOF
+
+[peer]
+Endpoint=$Endpoint
+AllowedIPs=$AllowedIPs
+PersistentKeepalive=$PersistentKeepalive
+PublicKey=$PublicKey
+EOF
+	done
+	return 0
+
+}
+
 set_udptun() {
-	local cfg="$(jsonfilter -i $1 -e '@.udptun')"
-	[ -z "$cfg" ] && return
-	eval $(echo $cfg|jsonfilter -e 'UDPTUN_IP=@.ip' -e 'UDPTUN_MASK=@.netmask' -e 'UDPTUN_P2P=@.pointopoint' \
-		-e 'UDPTUN_SERVER=@.server' -e 'UDPTUN_PORT=@.port' -e 'UDPTUN_KEY=@.key')
-	local KEYFILE="/var/run/mpudp.key"
+	local TMPFILE="/var/run/mpudp.cfg"
+	local MTU="$(jsonfilter -q -i $1 -e  '@["outbounds"][0].settings.vnext[0].udptun.interface.MTU')"
+	local Address="$(jsonfilter -q -i $1 -e  '@["outbounds"][0].settings.vnext[0].udptun.interface.Address')"
 	local DEV=$2
 	local MARK=$3
 
-	echo "$UDPTUN_KEY" >"$KEYFILE"
-	procd_open_instance "mpudptun"
-	procd_set_param command /usr/sbin/glorytun-udp bind 0.0.0.0 to $UDPTUN_SERVER $UDPTUN_PORT dev $DEV keyfile $KEYFILE
-	procd_set_param limits core="unlimited"
-	procd_set_param limits nofile="1000000 1000000"
-	procd_set_param stdout 1
-	procd_set_param stderr 1
-	procd_set_param respawn
-	procd_close_instance
+	format_udp_cfg "$1" "${TMPFILE}" || return 1
+	ip link del dev "${DEV}" 2>/dev/null                                                
+    ip link add dev "${DEV}" type wireguard
+	[ -n "$MTU" ] && ip link set mtu "$MTU" "${DEV}" 
+	wg setconf "${DEV}" "${TMPFILE}" || return 1
+	ip address add dev "${DEV}" "${Address}" || return 1
+	ip link set up dev "${DEV}" || return 1
 
 	[ -z "$(uci -q get firewall.mptun)" ] && {
 		uci set firewall.mptun=zone
@@ -79,7 +106,6 @@ set_udptun() {
 		/etc/init.d/network reload
 	}
 	
-	(sleep 3 && ifconfig "$DEV" "$UDPTUN_IP" netmask "$UDPTUN_MASK"  pointopoint "$UDPTUN_P2P" up) &
 }
 
 set_outbounds() {
@@ -114,7 +140,10 @@ clean_udptun() {
 		uci commit network
 		/etc/init.d/network reload
 	}
-	killall -9 /usr/sbin/glorytun-udp
+	config_load "$CONF"
+	local DEV
+	config_get DEV "global" "mptun" "mptun0"
+	ip link del dev "${DEV}" 2>/dev/null
 }
 
 
