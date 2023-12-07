@@ -56,6 +56,7 @@ function M.set_config(params)
             mp_iface = interface .. "_4"
         end
 
+--[[
         if kmwan.get_ifstatus(interface) == "online" then
             c:set("mptun", mp_iface, "mptcp_flags", {"subflow"})
         else
@@ -63,7 +64,7 @@ function M.set_config(params)
                 c:delete("mptun", mp_iface, "mptcp_flags")
             end
         end
-
+--]]
         c:set("mptun", mp_iface, "metric", metric)
         c:commit("mptun")
     end
