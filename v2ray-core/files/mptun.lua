@@ -1,6 +1,6 @@
 --[[
-    @object-name: mprouter
-    @object-desc: mprouter settings
+    @object-name: mptun
+    @object-desc: mptun settings
 --]]
 
 local uci = require "uci"
@@ -21,7 +21,9 @@ local ERR_PARAMETER_TYPE = 1
 
     @in array   interfaces Interfaces information that participate in aggregation network.
     @in string   interfaces.name Name of the interface.
-    @in boolean   interfaces.enable Indicates whether the interface is enabled.
+    @in bool   interfaces.enable Indicates whether the interface is enabled.
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "set_config"]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.set_config(params)
     local c = uci.cursor()
@@ -96,7 +98,10 @@ end
 
     @out array   interfaces Interfaces information that participate in aggregation network.
     @out string   interfaces.name Name of the interface.
-    @out boolean   interfaces.enable Indicates whether the interface is enabled.
+    @out bool   interfaces.enable Indicates whether the interface is enabled.
+
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "get_config"]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.get_config()
     local c = uci.cursor()
@@ -133,16 +138,20 @@ end
     @method-name: get_status
     @method-desc: get mprouter network status
 
-    @out string name: name of the device in the network
-    @out array ?nodes: Information about connections to other nodes, If the object does not exist, means the current device does not belong to any network
-    @out number nodes.type: connection type between node and device(0:aggregation, 1:s2s, 2:aggregation+s2s)
-    @out object nodes.self: information of the node
-    @out boolean nodes.self.name: Name of the node
-    @out boolean nodes.self.status: Indicates whether the node is online.
-    @out number nodes.self.type: Type of the node(0:edge, 1:gateway)
-    @out number nodes.self.acl_type: Type of the access policy(0:none, 1:allow to local 2:allow to subnet)
-    @out object nodes.peer: information of the peer(device self)
-    @out number nodes.peer.acl_type: Type of the access policy(0:none, 1:allow to local 2:allow to subnet)
+    @out string name name of the device in the network
+    @out string type type of the device in the network
+    @out array ?nodes Information about connections to other nodes, If the object does not exist, means the current device does not belong to any network
+    @out number nodes.type connection type between node and device(0:aggregation, 1:s2s, 2:aggregation+s2s)
+    @out object nodes.self information of the node
+    @out bool nodes.self.name Name of the node
+    @out bool nodes.self.status Indicates whether the node is online.
+    @out number nodes.self.type Type of the node(0:edge, 1:gateway)
+    @out number nodes.self.acl_type Type of the access policy(0:none, 1:allow to local 2:allow to subnet)
+    @out object nodes.peer information of the peer(device self)
+    @out number nodes.peer.acl_type Type of the access policy(0:none, 1:allow to local 2:allow to subnet)
+
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "get_status"]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 ]]
 function M.get_status()
 
@@ -153,11 +162,15 @@ end
     @method-name: get_traffic
     @method-desc: get traffic information
 
-    @out number tx: The amount of traffic the device sends per second on the network
-    @out number Rx: The amount of traffic the device receive per second on the network
-    @out array paths: Traffic information for each subflow
-    @out number paths.tx: The subflow sends per second on the network
-    @out number paths.rx: The subflow receive per second on the network
+    @out number tx The amount of traffic the device sends per second on the network
+    @out number rx The amount of traffic the device receive per second on the network
+    @out array paths Traffic information for each subflow
+    @out string paths.name Name of the path
+    @out number paths.tx The subflow sends per second on the network
+    @out number paths.rx The subflow receive per second on the network
+
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "get_traffic"]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 ]]
 function M.get_traffic()
 
