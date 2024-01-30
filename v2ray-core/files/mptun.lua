@@ -6,156 +6,118 @@
 local uci = require "uci"
 local fs = require "oui.fs"
 local ubus = require "oui.ubus"
--- local kmwan = require "gl.kmwan"
-local utils = require "oui.utils"
-local cjson = require "cjson"
 
 local M = {}
 
-local ERR_PARAMETER_TYPE = 1
+local ERR_PARAMETER = 1
 
 --[[
     @method-type: call
     @method-name: set_config
-    @method-desc: set mprouter config
+    @method-desc: set mptun config
 
     @in array   interfaces Interfaces information that participate in aggregation network.
-    @in string   interfaces.name Name of the interface.
-    @in bool   interfaces.enable Indicates whether the interface is enabled.
+    @in string  interfaces.name Name of the interface.
+    @in bool    interfaces.enable Indicates whether the interface is enabled.
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "set_config"]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.set_config(params)
     local c = uci.cursor()
-    local enable = params.enable
-    local mode = params.mode or tonumber(c:get("mptun", "global", "mode"))
-    local node_name = params.node_name or c:get("mptun", "global", "node") or "unknown"
-    local interfaces = params.mptun_interfaces or {}
-
-    if enable == nil then
-        enable = c:get("mptun", "global", "enable") == "1"
-    end
-
-    if type(enable) ~="boolean" or type(node_name) ~= "string" or type(mode) ~= "number" then
+    local interfaces = params.interfaces
+    if not interfaces or type(interfaces) ~= "table" then
         return {
-            err_code = -ERR_PARAMETER_TYPE,
-            err_msg = 'Parameter type error.'
+            err_code = -ERR_PARAMETER,
+            err_msg = "Input parameter error"
         }
     end
 
-    c:set("mptun", "global", "enable", enable and 1 or 0)
-    c:set("mptun", "global", "mode", mode)
-
-    for _, info in pairs(interfaces) do
-        local interface = info.interface
-        local metric = info.metric
-        local mp_iface = interface
-        if string.find(interface, "modem") and not string.find(interface, "_4") then
-            mp_iface = interface .. "_4"
+    for i=1, #interfaces do
+        local iface = interfaces[i].name
+        local enable = interfaces[i].enable
+        if string.find(iface, "modem") and not string.find(iface, "_4") then
+            iface = iface .. "_4"
         end
 
---[[
-        if kmwan.get_ifstatus(interface) == "online" then
-            c:set("mptun", mp_iface, "mptcp_flags", {"subflow"})
+        local metric = tonumber(c:get("kmwan", iface, "metric"))
+        if enable then
+            metric = metric < 100 and metric or metric - 100
         else
-            if c:get("mptun", mp_iface, "mptcp_flags") then
-                c:delete("mptun", mp_iface, "mptcp_flags")
-            end
+            metric = metric < 100 and metric + 100 or metric
         end
---]]
-        c:set("mptun", mp_iface, "metric", metric)
-        c:commit("mptun")
+        c:set("kmwan", iface, "metric", metric)
+        c:set("mptun", iface, "enable", enable and 1 or 0)
     end
 
-    c:set("mptun", "global", "node", node_name)
-
+    c:commit("kmwan")
     c:commit("mptun")
     fs.sync()
 
-    if enable then
-        ngx.timer.at(2.0, function()
-            ngx.pipe.spawn({"/usr/bin/parse_mpcfg", node_name}):wait()
-            ngx.pipe.spawn({"/etc/init.d/mpifd", "stop"}):wait()
-            ngx.pipe.spawn({"/etc/init.d/mptun", "stop"}):wait()
-            ngx.pipe.spawn({"/etc/init.d/kmwan", "stop"}):wait()
-            ngx.pipe.spawn({"/etc/init.d/mptun", "start"}):wait()
-            ngx.pipe.spawn({"/etc/init.d/kmwan", "start"}):wait()
-            ngx.pipe.spawn({"/etc/init.d/mpifd", "start"}):wait()
-        end)
-    else
-        ngx.timer.at(2.0, function()
-            ngx.pipe.spawn({"/etc/init.d/mpifd", "stop"}):wait()
-            ngx.pipe.spawn({"/etc/init.d/mptun", "stop"}):wait()
-            ngx.pipe.spawn({"/etc/init.d/kmwan", "restart"}):wait()
-        end)
-    end
+    ngx.timer.at(2.0, function()
+        ngx.pipe.spawn({"/etc/init.d/mpifd", "restart"}):wait()
+        ngx.pipe.spawn({"/etc/init.d/mptun", "restart"}):wait()
+        ngx.pipe.spawn({"/etc/init.d/kmwan", "restart"}):wait()
+    end)
 end
 
 --[[
     @method-type: call
     @method-name: get_config
-    @method-desc: get mprouter config
+    @method-desc: get mptun config
 
     @out array   interfaces Interfaces information that participate in aggregation network.
-    @out string   interfaces.name Name of the interface.
-    @out bool   interfaces.enable Indicates whether the interface is enabled.
+    @out string  interfaces.name Name of the interface.
+    @out bool    interfaces.enable Indicates whether the interface is enabled.
 
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "get_config"]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.get_config()
     local c = uci.cursor()
-    local enable = c:get("mptun", "global", "enable") == "1" and true or false
-    --Drop the starting '/etc/mptun/' and the ending '.cfg'
-    --local node_name = c:get("mptun", "config", "profile"):sub(12, -5)
-    local node_name = c:get("mptun", "global", "node") or "default"
-    local mptun_interfaces = {}
-    local mode = c:get("mptun", "global", "mode") or "0"
-
+    local ifaces = {}
 
     c:foreach("mptun", "interface", function(s)
         local array = {}
-        local metric = c:get("mptun", s[".name"], "metric")
-        if c:get("kmwan", s[".name"], "interface") then
-            array.interface = s[".name"]
-        else
-            array.interface = s[".name"]:sub(1,-3)
-        end
-        array.metric = tonumber(metric)
-        mptun_interfaces[#mptun_interfaces+1] = array
+        local enable = tonumber(c:get("mptun", s[".name"], "enable") or "0" )
+        array.interface = s[".name"]
+        array.enable = enable == 1
+        ifaces[#ifaces+1] = array
     end)
 
-    return {
-        enable = enable,
-        mode = tonumber(mode),
-        node_name = node_name,
-        mptun_interfaces = mptun_interfaces
-    }
+    return {interfaces = ifaces}
 end
 
 --[[
     @method-type: call
     @method-name: get_status
-    @method-desc: get mprouter network status
+    @method-desc: get mptun network status
 
     @out string name name of the device in the network
     @out string type type of the device in the network
     @out array ?nodes Information about connections to other nodes, If the object does not exist, means the current device does not belong to any network
     @out object nodes.self information of the node
     @out string nodes.self.name Name of the node
-    @out bool nodes.self.status Indicates whether the node is online.
+    @out bool   nodes.self.status Indicates whether the node is online.
     @out number nodes.self.type Type of the node(0:edge, 1:gateway)
     @out number nodes.self.acl_type Type of the access policy(0:none, 1:allow to local 2:allow to subnet)
-    @out bool  nodes.self.bond Indicates whether the connection is bonding.
+    @out number nodes.self.bond Indicates whether the connection is bonding.(0:none 1:aggregation 2:s2s 3:aggregation+s2s)
     @out object nodes.peer information of the peer(device self)
     @out number nodes.peer.acl_type Type of the access policy(0:none, 1:allow to local 2:allow to subnet)
-    @out bool  nodes.peer.bond Indicates whether the connection is bonding.
+    @out bool   nodes.peer.bond Indicates whether the connection is bonding.
 
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "get_status"]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 ]]
 function M.get_status()
-
+    local c = uci.cursor()
+    local node_name = c:get("mptun", "global", "name")
+    local type = c:get("mptun", "global", "type") --需在配置文件中添加该字段，可由gl-cloud程序中写入
+    local node_info = ubus.call("gl-cloud", "node_info"):wait() --gl-cloud需提供对应的ubus接口
+    return {
+        name = node_name,
+        type = type,
+        nodes = node_info or {}
+    }
 end
 
 --[[
@@ -174,19 +136,7 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 ]]
 function M.get_traffic()
-
-end
-
-function M.get_node_list()
-    ubus.call("gl-cloud", "mpnodes")
-    local data = {}
-
-    if fs.access('/etc/mptun/nodelist') then
-        data = utils.readfile("/etc/mptun/nodelist")
-        data = cjson.decode(data)
-    end
-
-    return {nodes = data}
+    --脚本实现，读取脚本数据,脚本需增加:1.判断聚合是否启用逻辑2.参与聚合的接口
 end
 
 return M
