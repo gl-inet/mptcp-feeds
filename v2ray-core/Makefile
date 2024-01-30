@@ -95,12 +95,15 @@ define Package/v2ray-core/install
 
 	$(INSTALL_DIR) $(1)/etc/mptun/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/config.json $(1)/etc/mptun/
-	$(INSTALL_DATA) $(CURDIR)/files/*.cfg $(1)/etc/mptun/
+	$(INSTALL_DATA) $(CURDIR)/files/basic.json $(1)/etc/mptun/
 
 	$(INSTALL_DIR) $(1)/etc/config/
 	$(INSTALL_CONF) $(CURDIR)/files/mptun.conf $(1)/etc/config/mptun
 	$(INSTALL_DIR) $(1)/etc/init.d/
 	$(INSTALL_BIN) $(CURDIR)/files/mptun.init $(1)/etc/init.d/mptun
+
+	$(INSTALL_DIR) $(1)/lib/functions/
+	$(INSTALL_BIN) $(CURDIR)/files/mptun.sh $(1)/lib/functions/
 
 	$(INSTALL_DIR) $(1)/usr/lib/oui-httpd/rpc
 	$(CP) $(CURDIR)/files/mptun.lua $(1)/usr/lib/oui-httpd/rpc/mptun

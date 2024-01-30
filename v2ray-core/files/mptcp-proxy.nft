@@ -13,8 +13,8 @@ table inet mproxy {
     chain prerouting {
         type filter hook prerouting priority 0;
         ip daddr $BYPASS_IP return
-        meta l4proto $UDPPROTO mark set $UDPMARK accept
-        meta l4proto $TCPPROTO mark set $TCPMARK tproxy ip to 127.0.0.1:$PROXY_PORT accept
+        ip daddr $UDP_ROUTE_IPS meta l4proto $UDPPROTO mark set $UDPMARK accept
+        ip daddr $TCP_ROUTE_IPS meta l4proto $TCPPROTO mark set $TCPMARK tproxy ip to 127.0.0.1:$PROXY_PORT accept
     }
 
     # 代理网关本机

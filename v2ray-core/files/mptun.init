@@ -6,125 +6,7 @@ START=89
 CONF="mptun"
 PROG="/usr/bin/mptun"
 
-clean_proxy() {
-	#rm  /etc/nftables.d/mptcp-proxy.nft 2>/dev/null
-	/usr/bin/proxy-route.sh "clean" 2>/dev/null
-	nft delete table inet mpass 2>/dev/null
-    nft delete table inet mproxy 2>/dev/null
-}
-
-set_proxy() {
-	local host port
-	host="$(jsonfilter -i $1 -e  '@["outbounds"][0].settings.vnext[0].address')"
-	if [ -z $host ]; then
-		host="$(jsonfilter -i $1 -e  '@["outbounds"][0].settings.servers[0].address')"
-	fi
-	port="$(jsonfilter -i $1 -e  '@["inbounds"][0].port')"
-
-cat > /var/run/mptun.nft << EOF
-#!/usr/sbin/nft -f
-define SERVER = {$host}
-define PROXY_PORT = $port
-define UDPMARK = "$3"
-define TCPMARK = "$2"
-EOF
-
-	nft -f /usr/bin/mptcp-proxy.nft
-	/usr/bin/proxy-route.sh "set"
-	#ln -s /usr/bin/mptcp-proxy.nft /etc/nftables.d
-}
-
-format_udp_cfg() {
-	local FILE="$2"
-	local interface="$(jsonfilter -q -i $1 -e  '@["outbounds"][0].settings.vnext[0].udptun.interface')"
-	local peers="$(jsonfilter -q -i $1 -e  '@["outbounds"][0].settings.vnext[0].udptun.peers')"
-	[ -z "$interface" -o -z "$peers" ] && return 1
-
-	eval $(echo $interface|jsonfilter -q -e 'Address=@.Address' -e 'PrivateKey=@.PrivateKey')
-cat >$FILE <<EOF
-[Interface]
-PrivateKey=$PrivateKey
-EOF
-	local i=0
-	while true;do
-		local peer=$(echo $peers|jsonfilter -q -e "@[$i]")
-		[ -z "$peer" ] &&  break
-		let i=i+1;
-		eval $(echo $peer|jsonfilter -q -e 'Endpoint=@.Endpoint' -e 'AllowedIPs=@.AllowedIPs' \
-		 -e 'PersistentKeepalive=@.PersistentKeepalive' -e 'PublicKey=@.PublicKey')
-cat >>$FILE <<EOF
-
-[peer]
-Endpoint=$Endpoint
-AllowedIPs=$AllowedIPs
-PersistentKeepalive=$PersistentKeepalive
-PublicKey=$PublicKey
-EOF
-	done
-	return 0
-
-}
-
-set_udptun() {
-	local TMPFILE="/var/run/mpudp.cfg"
-	local MTU="$(jsonfilter -q -i $1 -e  '@["outbounds"][0].settings.vnext[0].udptun.interface.MTU')"
-	local Address="$(jsonfilter -q -i $1 -e  '@["outbounds"][0].settings.vnext[0].udptun.interface.Address')"
-	local DEV=$2
-	local MARK=$3
-
-	format_udp_cfg "$1" "${TMPFILE}" || return 1
-	ip link del dev "${DEV}" 2>/dev/null                                                
-    ip link add dev "${DEV}" type wireguard
-	[ -n "$MTU" ] && ip link set mtu "$MTU" "${DEV}" 
-	wg setconf "${DEV}" "${TMPFILE}" || return 1
-	ip address add dev "${DEV}" "${Address}" || return 1
-	ip link set up dev "${DEV}" || return 1
-
-	[ -z "$(uci -q get firewall.mptun)" ] && {
-		uci set firewall.mptun=zone
-		uci set firewall.mptun.name='mptun'
-		uci set firewall.mptun.device="$DEV"
-		uci set firewall.mptun.input='DROP'
-		uci set firewall.mptun.output='ACCEPT'
-		uci set firewall.mptun.forward='DROP'
-		uci set firewall.mptun.masq='1'
-		uci set firewall.mptun.mtu_fix='1'
-		uci set firewall.lan2mptun=forwarding
-		uci set firewall.lan2mptun.src='lan'
-		uci set firewall.lan2mptun.dest='mptun'
-		uci commit firewall
-		/etc/init.d/firewall reload
-	}
-
-	[ -z "$(uci -q get network.mpudptun_rule)" ] && {
-		uci set network.mpudptun_rule=rule
-		uci set network.mpudptun_rule.mark="$MARK"
-		uci set network.mpudptun_rule.lookup='30'
-		uci set network.mpudptun_rule.priority='30'
-		uci commit network
-		/etc/init.d/network reload
-	}
-	
-}
-
-clean_udptun() {
-	[ -n "$(uci -q get firewall.mptun)" ] && {
-		uci del firewall.mptun
-		uci del firewall.lan2mptun
-		uci commit firewall
-		/etc/init.d/firewall reload
-	}
-
-	[ -n "$(uci -q get network.mpudptun_rule)" ] && {
-		uci del network.mpudptun_rule
-		uci commit network
-		/etc/init.d/network reload
-	}
-	config_load "$CONF"
-	local DEV
-	config_get DEV "global" "mptun" "mptun0"
-	ip link del dev "${DEV}" 2>/dev/null
-}
+. /lib/functions/mptun.sh
 
 
 start_service() {
@@ -137,32 +19,27 @@ start_service() {
 	config_get tcpmark "global" "tcpmark" "0x1"
 
 	[ "$enabled" -eq "1" ] || return 1
-
 	local profile
-	local conffiles
-	local datadir
-	local format
-
 	config_get profile "config" "profile"
 	[ -z "$profile" ] && return 1
+	[ -e "$profile" ] || return 1
 
+	mptun_init "$profile" "$dev" "$udpmark" "$tcpmark"
+	[ -e "/var/run/mpnode.json" ] || return 1
+	
 	procd_open_instance "$CONF"
 	procd_set_param command "$PROG" run
-	procd_append_param command -config "$profile" -format json
-
+	procd_append_param command -config "/etc/mptun/basic.json" -config "/var/run/mpnode.json" -format json
 	procd_set_param limits core="unlimited"
 	procd_set_param limits nofile="1000000 1000000"
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_set_param respawn
 	procd_close_instance
-	set_udptun "$profile" "$dev" "$udpmark"
-	set_proxy "$profile" "$tcpmark" "$udpmark"
 	echo c >/proc/net/nf_conntrack
 }
 
 stop_service() {  
     killall -9 $PROG
-	clean_udptun
-	clean_proxy                                                                                                          
+	mptun_clean
 }  

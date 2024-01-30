@@ -1,0 +1,37 @@
+{
+    "log": {
+        "loglevel": "none"
+    },
+    "inbounds": [
+    {
+      "tag":"transparent",
+      "port": 1080,
+      //"port": 1883,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "network": "tcp",
+        //"address": "127.0.0.1",
+        //"port": 1883,
+        "followRedirect": true
+      },
+      "streamSettings": {
+        "sockopt": {
+          "tproxy": "tproxy",
+          "mark":255
+        }
+      }
+    }
+    ],
+    "outbounds": [
+        {
+            "protocol": "vmess",
+            "streamSettings": {
+                "sockopt": {
+          		    "mptcp": true
+        	    },
+                "network": "tcp"
+            },
+            "tag": "mptunout"
+        }
+    ]
+}
