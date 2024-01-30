@@ -141,14 +141,15 @@ end
     @out string name name of the device in the network
     @out string type type of the device in the network
     @out array ?nodes Information about connections to other nodes, If the object does not exist, means the current device does not belong to any network
-    @out number nodes.type connection type between node and device(0:aggregation, 1:s2s, 2:aggregation+s2s)
     @out object nodes.self information of the node
-    @out bool nodes.self.name Name of the node
+    @out string nodes.self.name Name of the node
     @out bool nodes.self.status Indicates whether the node is online.
     @out number nodes.self.type Type of the node(0:edge, 1:gateway)
     @out number nodes.self.acl_type Type of the access policy(0:none, 1:allow to local 2:allow to subnet)
+    @out bool  nodes.self.bond Indicates whether the connection is bonding.
     @out object nodes.peer information of the peer(device self)
     @out number nodes.peer.acl_type Type of the access policy(0:none, 1:allow to local 2:allow to subnet)
+    @out bool  nodes.peer.bond Indicates whether the connection is bonding.
 
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "get_status"]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
