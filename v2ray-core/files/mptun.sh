@@ -34,29 +34,29 @@ EOF
 
 format_udp_cfg() {
     local FILE="$2"
-    local interface="$(jsonfilter -q -i $1 -e  '@.interface')"
-    local peers="$(jsonfilter -q -i $1 -e  '@.peers')"
+    local interface="$(jsonfilter -q -i $1 -e  '@.udpTun.interface')"
+    local peers="$(jsonfilter -q -i $1 -e  '@.udpTun.peers')"
     [ -z "$interface" -o -z "$peers" ] && return 1
 
-    eval $(echo $interface|jsonfilter -q -e 'Address=@.Address' -e 'PrivateKey=@.PrivateKey')
+    eval $(echo $interface|jsonfilter -q -e 'Address=@.address' -e 'privateKey=@.privateKey')
 cat >$FILE <<EOF
 [Interface]
-PrivateKey=$PrivateKey
+privateKey=$privateKey
 EOF
     local i=0
     while true;do
         local peer=$(echo $peers|jsonfilter -q -e "@[$i]")
         [ -z "$peer" ] &&  break
         let i=i+1;
-        eval $(echo $peer|jsonfilter -q -e 'Endpoint=@.Endpoint' -e 'AllowedIPs=@.AllowedIPs' \
-         -e 'PersistentKeepalive=@.PersistentKeepalive' -e 'PublicKey=@.PublicKey')
+        eval $(echo $peer|jsonfilter -q -e 'endpoint=@.endpoint' -e 'allowedIps=@.allowedIps' \
+         -e 'persistentKeepalive=@.persistentKeepalive' -e 'publicKey=@.publicKey')
 cat >>$FILE <<EOF
 
 [peer]
-Endpoint=$Endpoint
-AllowedIPs=$AllowedIPs
-PersistentKeepalive=$PersistentKeepalive
-PublicKey=$PublicKey
+endpoint=$endpoint
+allowedIps=$allowedIps
+persistentKeepalive=${persistentKeepalive:=25}
+publicKey=$publicKey
 EOF
     done
     return 0
@@ -65,8 +65,8 @@ EOF
 
 set_udptun() {
     local TMPFILE="/var/run/mpudp.cfg"
-    local MTU="$(jsonfilter -q -i $1 -e  '@.interface.MTU')"
-    local Address="$(jsonfilter -q -i $1 -e  '@.interface.Address')"
+    local MTU="$(jsonfilter -q -i $1 -e  '@.udpTun.interface.mtu')"
+    local Address="$(jsonfilter -q -i $1 -e  '@.udpTun.interface.address')"
     local DEV=$2
     local MARK=$3
 
@@ -173,8 +173,8 @@ set_proxy() {
     while true;do
             local peer=$(jsonfilter -i $cfg -q -e "@.udpTun.peers[$i]")
             [ -z "$peer" ] &&  break
-            local endpoint=$(jsonfilter -i $cfg -q -e "@.udpTun.peers[$i].Endpoint")
-            local allowedips=$(jsonfilter -i $cfg -q -e "@.udpTun.peers[$i].AllowedIps")
+            local endpoint=$(jsonfilter -i $cfg -q -e "@.udpTun.peers[$i].endpoint")
+            local allowedips=$(jsonfilter -i $cfg -q -e "@.udpTun.peers[$i].allowedIps")
             endpoint=${endpoint%:*}
             servers=${servers}${endpoint:+,$endpoint}
             udp_route_ips=${udp_route_ips}${allowedips:+,$allowedips}
@@ -191,20 +191,21 @@ set_proxy() {
     udp_route_ips=${udp_route_ips#*,}
     #全局代理仅对udp和icmp协议生效，从代理路由中剔除0.0.0.0
     [ -n "$udp_global_proto" ] && {
-        udp_route_ips="$(echo "$udp_route_ips"|sed 's/,0.0.0.0\/0//g'|sed 's/0.0.0.0\/0,//g')"
+        udp_route_ips="$(echo "$udp_route_ips"|sed 's/,0.0.0.0\/0//g'|sed 's/0.0.0.0\/0,//g'|sed 's/0.0.0.0\/0//g')"
     }
                              
-cat > /var/run/tmp.nft << EOF
+cat > /var/run/mptun.nft << EOF
 #!/usr/sbin/nft -f        
 define SERVER = {$servers}   
-define TCP_PROXY_PORT = $port          
-define UDP_ROUTE_IPS = {$udp_route_ips}
+define TCP_PROXY_PORT = 1080          
+${udp_route_ips:+define UDP_ROUTE_IPS = \{$udp_route_ips\}}
 define TCP_ROUTE_IPS = {$tcp_route_ips}
 define UDPMARK = "$3"
 define TCPMARK = "$2"                        
 define UDP_GOLBAL_PROTO = {$udp_global_proto}
 
-define BYPASS_IP = {127.0.0.1/32, 224.0.0.0/4, 255.255.255.255/32, \$SERVER}
+define BYPASS_IP = {127.0.0.1/32, 224.0.0.0/4, 255.255.255.255/32,169.254.0.0/16,192.0.2.0/24,198.18.0.0/15, \$SERVER}
+define PRIVATEIP = {192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12}
 define TCPPROTO = {tcp}
 
 table inet mproxy {}
@@ -214,10 +215,11 @@ table inet mproxy {
         type filter hook prerouting priority 0;
         ip daddr \$BYPASS_IP return
         #将所有对端子网设置好udp隧道标记，后续路由规则将使用
-        ip daddr \$UDP_ROUTE_IPS  mark set \$UDPMARK accept
+        ${udp_route_ips:+ip daddr \$UDP_ROUTE_IPS  mark set \$UDPMARK accept}
         #如果存在udp聚合peer，则应用这条规则
         ${udp_global_proto:+meta l4proto \$UDP_GOLBAL_PROTO mark set \$UDPMARK accept}
-        #tcp代理规则
+        #tcp代理规则,仅代理公网
+        ip daddr \$PRIVATEIP return
         ip daddr \$TCP_ROUTE_IPS meta l4proto \$TCPPROTO mark set \$TCPMARK tproxy ip to 127.0.0.1:\$TCP_PROXY_PORT accept
     }
 }
@@ -233,7 +235,7 @@ table inet mpass {
 }
 EOF
  
-    nft -f /var/run/tmp.nft
+    nft -f /var/run/mptun.nft
     /usr/bin/proxy-route.sh "set"
 }
 

@@ -4,6 +4,8 @@ set_route() {
     ip rule del pref 10
     ip rule add fwmark 1 table 10 pref 10
     ip route add local 0.0.0.0/0 dev lo table 10
+    #local address use main route table
+    ip rule add from all lookup main suppress_prefixlength 1 pref 9
 }
 
 
@@ -11,6 +13,7 @@ set_route() {
 clean_route() {
     ip rule del pref 10
     ip route flush table 10
+    ip rule del pref 9
 }
 
 case $1 in
