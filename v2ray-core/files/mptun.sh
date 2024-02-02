@@ -170,6 +170,7 @@ set_proxy() {
     tcp_route_ips="0.0.0.0/0"
 
     local i=0
+    local global_cnt=0
     while true;do
             local peer=$(jsonfilter -i $cfg -q -e "@.udpTun.peers[$i]")
             [ -z "$peer" ] &&  break
@@ -179,6 +180,7 @@ set_proxy() {
             servers=${servers}${endpoint:+,$endpoint}
             udp_route_ips=${udp_route_ips}${allowedips:+,$allowedips}
 
+            [ -n "$(echo $allowedips|grep 0.0.0.0/0)" ] && let global_cnt=global_cnt+1
             #如果对端地址与tcp地址相同，则为udp聚合peer,仅对udp和icmp协议做全局代理
             [ -n $host ] && [ "$host" = "$endpoint" ] && [ -n "$(echo $allowedips|grep 0.0.0.0/0)" ] && {
                     udp_global_proto="udp,icmp"
@@ -189,8 +191,8 @@ set_proxy() {
     servers=${servers#*,}            
     tcp_route_ips=${tcp_route_ips#*,}
     udp_route_ips=${udp_route_ips#*,}
-    #全局代理仅对udp和icmp协议生效，从代理路由中剔除0.0.0.0
-    [ -n "$udp_global_proto" ] && {
+    #如果只有一个global路由，且为聚合的global,全局代理仅对udp和icmp协议生效，从代理路由中剔除0.0.0.0
+    [ -n "$udp_global_proto" ] && [ "$global_cnt" = "1" ] && {
         udp_route_ips="$(echo "$udp_route_ips"|sed 's/,0.0.0.0\/0//g'|sed 's/0.0.0.0\/0,//g'|sed 's/0.0.0.0\/0//g')"
     }
                              
