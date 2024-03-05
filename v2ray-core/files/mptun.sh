@@ -38,7 +38,7 @@ format_udp_cfg() {
     local peers="$(jsonfilter -q -i $1 -e  '@.udpTun.peers')"
     [ -z "$interface" -o -z "$peers" ] && return 1
 
-    eval $(echo $interface|jsonfilter -q -e 'Address=@.address' -e 'privateKey=@.privateKey')
+    eval $(echo $interface|jsonfilter -q -e 'address=@.address' -e 'privateKey=@.privateKey')
 cat >$FILE <<EOF
 [Interface]
 privateKey=$privateKey
@@ -46,17 +46,24 @@ EOF
     local i=0
     while true;do
         local peer=$(echo $peers|jsonfilter -q -e "@[$i]")
+        local allowip symbol
+
         [ -z "$peer" ] &&  break
         let i=i+1;
-        eval $(echo $peer|jsonfilter -q -e 'endpoint=@.endpoint' -e 'allowedIps=@.allowedIps' \
+        eval $(echo $peer|jsonfilter -q -e 'endPoint=@.endPoint' -e 'allowedIps=@.allowedIps' \
          -e 'persistentKeepalive=@.persistentKeepalive' -e 'publicKey=@.publicKey')
+
+        if [ -n "$allowedIps" ]; then
+            allowip="allowedIps"
+            symbol=":"
+        fi
 cat >>$FILE <<EOF
 
 [peer]
-endpoint=$endpoint
-allowedIps=$allowedIps
+endPoint=$endPoint
 persistentKeepalive=${persistentKeepalive:=25}
 publicKey=$publicKey
+$allowip$symbol$allowedIps
 EOF
     done
     return 0
@@ -174,7 +181,7 @@ set_proxy() {
     while true;do
             local peer=$(jsonfilter -i $cfg -q -e "@.udpTun.peers[$i]")
             [ -z "$peer" ] &&  break
-            local endpoint=$(jsonfilter -i $cfg -q -e "@.udpTun.peers[$i].endpoint")
+            local endpoint=$(jsonfilter -i $cfg -q -e "@.udpTun.peers[$i].endPoint")
             local allowedips=$(jsonfilter -i $cfg -q -e "@.udpTun.peers[$i].allowedIps")
             endpoint=${endpoint%:*}
             servers=${servers}${endpoint:+,$endpoint}
