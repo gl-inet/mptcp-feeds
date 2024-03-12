@@ -92,26 +92,6 @@ function M.get_config()
     return {interfaces = ifaces}
 end
 
-local function build_virtual_ret()
-    local node = {}
-    local nodes = {}
-
-    local self = {}
-    self.name = "my_node"
-    self.status = 1
-    self.type = 0
-    self.acl_type = 0
-    self.bond = 1
-    node.self = self
-    self = {}
-    self.acl_type = 0
-    self.bond = 1
-    node.peer = self
-
-    nodes[#nodes+1] = node
-    return nodes
-end
-
 --[[
     @method-type: call
     @method-name: get_status
@@ -139,15 +119,15 @@ function M.get_status()
 
     local i
     local nodes = {}
-    local node = {}
+    local network_name
     for i = 1, #conf.peer do
+        local node = {}
         local self = {}
         local peer = {}
         self.name = conf.peer[i].name
         self.type = conf.peer[i].nodeType == "CLOUD_GATEWAY" and 1 or 0
 
-        --这里状态总共有4种，未激活状态是否需要处理?
-        if conf.peer[i].status == "offline" then
+        if conf.peer[i].status == "offline" or conf.peer[i].status == "not_active" then
             self.status = 0
         elseif conf.peer[i].status == "online" then
             self.status = 1
@@ -155,41 +135,40 @@ function M.get_status()
             self.status = 2
         end
 
+        peer.acl_type = 0
+        self.acl_type = 0
+
         if conf.peer[i].connectionType == "aggregation" then
-            self.bond = 0
-            self.acl_type = 0
-            peer.acl_type = 1
+            network_name = conf.peer[i].name
+            self.bond = 1
+            self.acl_type = 2
             peer.bond = 0
         else
             if conf.peer[i].fromAllowAccessLanAndWan and
                conf.peer[i].fromAllowAccessLanAndWan == 1 then
-                self.acl_type = 1
-            elseif conf.peer[i].toAllowAccessLanAndWan and
-                conf.peer[i].toAllowAccessLanAndWan == 1 then
                 self.acl_type = 2
-            else
-                self.acl_type = 0
             end
-            self.bond = 2
-            peer.acl_type = self.acl_type
-            peer.bond = peer.bond
+            if conf.peer[i].toAllowAccessLanAndWan and
+               conf.peer[i].toAllowAccessLanAndWan == 1 then
+                peer.acl_type = 2
+            end
+
+            if conf.peer[i].nodeType and conf.peer[i].nodeType == "EDGE" then
+                peer.bond = 0
+            else
+                peer.bond = 1
+            end
+            if conf.peer[i].edgeType and conf.peer[i].edgeType == "EDGE" then
+                self.bond = 0
+            end
         end
         node.self = self
         node.peer = peer
         nodes[#nodes+1] = node
     end
 
---[[
     return {
-        network_name = "mpdevice",
-        name = "test",
-        --name = node_name,
-        type = 0
-        --nodes = node_info or {}
-    }
---]]
-    return {
-        network_name = conf.network_name,
+        network_name = network_name,
         name = conf.name,
         type = conf.type,
         nodes = nodes
