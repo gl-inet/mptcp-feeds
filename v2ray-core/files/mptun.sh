@@ -134,7 +134,6 @@ set_firewall()
         uci set firewall.mptun_subnet_rule.src="mptun"
         uci set firewall.mptun_subnet_rule.dest='*'
         uci add_list firewall.mptun_subnet_rule.proto='all'
-        uci set firewall.mptun_subnet_rule.target='ACCEPT'
     }
 
     [ -z "$(uci -q get firewall.mptun_local_rule)" ] && {
@@ -142,7 +141,6 @@ set_firewall()
         uci set firewall.mptun_local_rule.name='mptun local rule'
         uci set firewall.mptun_local_rule.src="mptun"
         uci add_list firewall.mptun_local_rule.proto='all'
-        uci set firewall.mptun_local_rule.target='ACCEPT'
     }
 
     uci delete firewall.mptun_subnet_rule.src_ip
@@ -153,11 +151,21 @@ set_firewall()
     for i in $destips;do
         uci add_list firewall.mptun_subnet_rule.dest_ip="$i"
     done
+    if [ -z "$srcips" -o -z "$destips" ];then
+        uci set firewall.mptun_subnet_rule.target='DROP'
+    else
+        uci set firewall.mptun_subnet_rule.target='ACCEPT'
+    fi
 
     uci delete firewall.mptun_local_rule.src_ip
     for i in $localips;do
         uci add_list firewall.mptun_local_rule.src_ip="$i"
     done
+    if [ -z "$localips" ];then
+        uci set firewall.mptun_local_rule.target='DROP'
+    else
+        uci set firewall.mptun_local_rule.target='ACCEPT'
+    fi
 
     uci commit firewall
     /etc/init.d/firewall reload 
