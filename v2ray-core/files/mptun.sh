@@ -46,24 +46,19 @@ EOF
     local i=0
     while true;do
         local peer=$(echo $peers|jsonfilter -q -e "@[$i]")
-        local allowip symbol
 
         [ -z "$peer" ] &&  break
         let i=i+1;
         eval $(echo $peer|jsonfilter -q -e 'endPoint=@.endPoint' -e 'allowedIps=@.allowedIps' \
          -e 'persistentKeepalive=@.persistentKeepalive' -e 'publicKey=@.publicKey')
 
-        if [ -n "$allowedIps" ]; then
-            allowip="allowedIps"
-            symbol=":"
-        fi
 cat >>$FILE <<EOF
 
 [peer]
 endPoint=$endPoint
 persistentKeepalive=${persistentKeepalive:=25}
 publicKey=$publicKey
-$allowip$symbol$allowedIps
+${allowedIps:+allowedIps=$allowedIps}
 EOF
     done
     return 0
