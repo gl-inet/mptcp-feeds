@@ -76,7 +76,7 @@ end
     @out bool    interfaces.enable Indicates whether the interface is enabled.
 
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "get_config"]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"interfaces":[{"name":"wan","enable":true},{"name":"secondwan","enable":true},{"name":"wwan","enable":false},{"name":"tethering","enable":false}]}}
 --]]
 function M.get_config()
     local c = uci.cursor()
@@ -99,6 +99,7 @@ end
     @method-desc: get mptun network status
 
     @out string name name of the device in the network
+    @out bool  online Whether the device is in an aggregated network
     @out string network_name The network name field obtained from the cloud platform
     @out array ?nodes Information about connections to other nodes, If the object does not exist, means the current device does not belong to any network
     @out object nodes.self information of the node
@@ -112,16 +113,27 @@ end
     @out number nodes.peer.bond Indicates whether the connection is bonding.(0:none 1:aggregation 2:s2s 3:aggregation+s2s)
 
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "get_status"]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"network_name":"test","type":0,"name":"mt6000","nodes":[{"self":{"acl_type":2,"type":1,"name":"test","status":1,"bond":1},"peer":{"acl_type":0,"bond":0}}],"online":true}}
 ]]
 function M.get_status()
     local c = uci.cursor()
     local conf = cjson.decode(utils.readfile("/etc/mptun/mpnet_conf") or "{}")
+    local enable = c:get("mptun", "global", "enable")
+
+    local online = true
+    local loop_cnt = 0
+
+    if not conf.peer or #conf.peer == 0
+       or enable == "0" then
+        online = false
+    else
+        loop_cnt = #conf.peer
+    end
 
     local i
     local nodes = {}
     local network_name
-    for i = 1, #conf.peer do
+    for i = 1, loop_cnt do
         local node = {}
         local self = {}
         local peer = {}
@@ -172,6 +184,7 @@ function M.get_status()
         network_name = network_name,
         name = conf.name,
         type = conf.type,
+        online = online,
         nodes = nodes
     }
 end
