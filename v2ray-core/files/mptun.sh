@@ -201,16 +201,17 @@ set_proxy() {
     servers=${servers#*,}            
     tcp_route_ips=${tcp_route_ips#*,}
     udp_route_ips=${udp_route_ips#*,}
-    #如果只有一个global路由，且为聚合的global,全局代理仅对udp和icmp协议生效，从代理路由中剔除0.0.0.0
+    #如果只有一个global路由，且为聚合的global,全局代理仅对udp和icmp协议生效，从代理路由中剔除0.0.0.0和::0
     [ -n "$udp_global_proto" ] && [ "$global_cnt" = "1" ] && {
         udp_route_ips="$(echo "$udp_route_ips"|sed 's/,0.0.0.0\/0//g'|sed 's/0.0.0.0\/0,//g'|sed 's/0.0.0.0\/0//g')"
+        udp_route_ips="$(echo "$udp_route_ips"|sed 's/,::\/0//g'|sed 's/::\/0,//g'|sed 's/::\/0//g')"
     }
                              
 cat > /var/run/mptun.nft << EOF
 #!/usr/sbin/nft -f        
 define SERVER = {$servers}   
 define TCP_PROXY_PORT = 1080          
-${udp_route_ips:+define UDP_ROUTE_IPS = \{$udp_route_ips\}}
+${udp_route_ips:+define UDP_ROUTE_IPS = {$udp_route_ips\}}
 define TCP_ROUTE_IPS = {$tcp_route_ips}
 define UDPMARK = "$3"
 define TCPMARK = "$2"                        
