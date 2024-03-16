@@ -92,6 +92,9 @@ define Package/v2ray-core/install
 	$(INSTALL_BIN) $(CURDIR)/files/proxy-route.sh $(1)/usr/bin/
 	$(INSTALL_BIN) $(CURDIR)/files/get_mplinkip.sh $(1)/usr/bin/
 
+	$(INSTALL_DIR) $(1)/usr/local/lib/lua/5.3/gl
+	$(CP) $(CURDIR)/files/libmptun.lua $(1)/usr/local/lib/lua/5.3/gl/mptun.lua
+
 	$(INSTALL_DIR) $(1)/etc/mptun/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/config.json $(1)/etc/mptun/
 	$(INSTALL_DATA) $(CURDIR)/files/basic.json $(1)/etc/mptun/
