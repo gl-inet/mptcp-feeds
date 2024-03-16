@@ -61,6 +61,7 @@ function M.set_config(params)
         ngx.pipe.spawn({"/etc/init.d/mpifd", "restart"}):wait()
         ngx.pipe.spawn({"/etc/init.d/mptun", "restart"}):wait()
         ngx.pipe.spawn({"/etc/init.d/kmwan", "restart"}):wait()
+        ngx.pipe.spawn({"/etc/init.d/mpflow", "restart"})
     end)
 
 end
@@ -182,17 +183,20 @@ end
 
     @out number tx The amount of traffic the device sends per second on the network
     @out number rx The amount of traffic the device receive per second on the network
-    @out array paths Traffic information for each subflow
-    @out string paths.name Name of the path
-    @out number paths.tx The subflow sends per second on the network
-    @out number paths.rx The subflow receive per second on the network
+    @out array  ?path.$iface.tx iface:[wan|wwan|secondwan|tethering|modem] Number of bytes received by the interface.
+    @out array  ?path.$iface.rx iface:[wan|wwan|secondwan|tethering|modem] Number of bytes sent by the interface
 
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "get_traffic"]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"path":{"wan":{"rx":[13373,15484,13626],"tx":[16677,18612,12387]},"secondwan":{"rx":[19838,20956,11762],"tx":[11486,12092,6762]}}}}
 ]]
 function M.get_traffic()
-    --脚本实现，读取脚本数据,脚本需增加:1.判断聚合是否启用逻辑2.参与聚合的接口
-    return nil
+    ngx.pipe.spawn({"/usr/bin/get_mpflow.sh"}):wait()
+    local data = cjson.decode(utils.readfile("/tmp/mpflow.json") or "{}")
+    if data.path then
+        return {path = data.path}
+    else
+        return {path = {}}
+    end
 end
 
 return M
