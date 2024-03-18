@@ -29,12 +29,6 @@ local function get_uuid()
     return string.sub(file.readfile('/proc/sys/kernel/random/uuid'), 1, -2)
 end
 
---[[
-local function get_model()
-	return string.sub(file.readfile('/proc/gl-hw-info/model'), 1, -2)
-end
---]]
-
 local function build_response_msg(topic, mac)
 	local valid_topic1, valid_topic2, valid_topic3
 	local pub_topic
@@ -97,7 +91,7 @@ local function handle_recv_net_config(msg)
 			exitNode =  msg.data['udpTun']['interface']['exitNode']
 		},
 		peers = msg.data['udpTun']['peers'],
-		clients = msg.data['udpTun']['clinets']
+		clients = msg.data['udpTun']['clients']
 	}
 
 	node = {
@@ -107,10 +101,8 @@ local function handle_recv_net_config(msg)
 			udpTun = udpTun,
 		}
 	}
-	--file.writefile('/root/mpnet.json', cjson.encode(node.data))
-	if tcpTun then
-		file.writefile('/etc/mptun/mpnet.json', cjson.encode(node.data))
-	end
+
+	file.writefile('/etc/mptun/mpnet.json', cjson.encode(node.data))
 	return tcpTun ~= nil
 end
 
@@ -225,7 +217,6 @@ function mp_device.handle_recv_msg(topic, mac, msg)
 	   and topic ~= valid_topic3 and topic ~= valid_topic4
 	   and topic ~= valid_topic5 and topic ~= valid_topic6
 	   and topic ~= valid_topic7 then
-		log.err('err topic:', topic)
 		return
 	end
 
