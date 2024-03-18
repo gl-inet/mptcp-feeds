@@ -116,6 +116,7 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"network_name":"test","type":0,"name":"mt6000","nodes":[{"self":{"acl_type":2,"type":1,"name":"test","status":1,"bond":1},"peer":{"acl_type":0,"bond":0}}],"online":true}}
 ]]
 function M.get_status()
+    ubus.call('gl-cloud', 'mpdevice_net_topology')
     local c = uci.cursor()
     local conf = cjson.decode(utils.readfile("/etc/mptun/mpnet_conf") or "{}")
     local enable = c:get("mptun", "global", "enable")
