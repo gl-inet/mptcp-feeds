@@ -103,7 +103,6 @@ local function handle_recv_net_config(msg)
 	}
 
 	file.writefile('/etc/mptun/mpnet.json', cjson.encode(node.data))
-	return tcpTun ~= nil
 end
 
 --上报本地资源信息
@@ -221,11 +220,8 @@ function mp_device.handle_recv_msg(topic, mac, msg)
 	end
 
 	if topic == valid_topic1 or topic == valid_topic7 then
-		if (handle_recv_net_config(msg)) then
-			start_sdwan()
-		else
-			stop_sdwan()
-		end
+		handle_recv_net_config(msg)
+		start_sdwan()
 	elseif topic == valid_topic2 then
 		stop_sdwan()
 	elseif topic == valid_topic5 then
