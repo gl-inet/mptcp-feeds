@@ -260,10 +260,10 @@ mptun_init() {
     local udpmark=$3
     local tcpmark=$4
 
-    set_udptun "$cfg" "$dev" "$udpmark"
     set_tcptun "$cfg"
+    set_udptun "$cfg" "$dev" "$udpmark"
     set_firewall "$cfg" "$dev"
-    set_proxy "$cfg" "$tcpmark" "$udpmark" 
+    [ -e /var/run/mpnode.json ] && set_proxy "$cfg" "$tcpmark" "$udpmark" 
 }
 
 clean_proxy() {
