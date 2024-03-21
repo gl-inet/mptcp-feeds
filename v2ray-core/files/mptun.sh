@@ -4,7 +4,7 @@ set_tcptun() {
     host="$(jsonfilter -i $cfg -q -e  '@.tcpTun.address')"
     port="$(jsonfilter -i $cfg -q -e  '@.tcpTun.port')"
     key="$(jsonfilter -i $cfg -q -e  '@.tcpTun.users[0].key')"
-    [ -z $host -o -z $port -o -z $key ] && return 1
+    [ -z "$host" -o -z "$port" -o -z "$key" ] && return 1
 cat >/var/run/mpnode.json <<EOF
 {
   "outbounds": [
@@ -143,11 +143,11 @@ set_firewall()
         uci add_list firewall.mptun_local_rule.proto='all'
     }
 
-    uci delete firewall.mptun_subnet_rule.src_ip
+    uci -q delete firewall.mptun_subnet_rule.src_ip
     for i in $srcips;do
         uci add_list firewall.mptun_subnet_rule.src_ip="$i"
     done
-    uci delete firewall.mptun_subnet_rule.dest_ip
+    uci -q delete firewall.mptun_subnet_rule.dest_ip
     for i in $destips;do
         uci add_list firewall.mptun_subnet_rule.dest_ip="$i"
     done
@@ -157,7 +157,7 @@ set_firewall()
         uci set firewall.mptun_subnet_rule.target='ACCEPT'
     fi
 
-    uci delete firewall.mptun_local_rule.src_ip
+    uci -q delete firewall.mptun_local_rule.src_ip
     for i in $localips;do
         uci add_list firewall.mptun_local_rule.src_ip="$i"
     done
@@ -271,7 +271,7 @@ clean_proxy() {
 	/usr/bin/proxy-route.sh "clean" 2>/dev/null
 	nft delete table inet mpass 2>/dev/null
     nft delete table inet mproxy 2>/dev/null
-    rm /var/run/mpnode.json
+    [ -e /var/run/mpnode.json ] && rm /var/run/mpnode.json
 }
 
 clean_udptun() {
