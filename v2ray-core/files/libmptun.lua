@@ -186,6 +186,8 @@ local function handle_recv_net_topology(msg)
 		tmp_peer.nodeType = msg.data['pointList'][i]['nodeType']
 		tmp_peer.edgeType = msg.data['pointList'][i]['edgeType']
 		tmp_peer.connectionType = msg.data['pointList'][i]['connectionType']
+		tmp_peer.fromAllowAccess = msg.data['pointList'][i]['fromAllowAccess']
+		tmp_peer.toAllowAccess = msg.data['pointList'][i]['toAllowAccess']
 		tmp_peer.fromAllowAccessLanAndWan = msg.data['pointList'][i]['fromAllowAccessLanAndWan']
 		tmp_peer.toAllowAccessLanAndWan = msg.data['pointList'][i]['toAllowAccessLanAndWan']
 		tmp_peer.status = msg.data['pointList'][i]['status']

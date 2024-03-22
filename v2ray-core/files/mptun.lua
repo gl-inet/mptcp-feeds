@@ -158,13 +158,23 @@ function M.get_status()
             self.acl_type = 2
             peer.bond = 0
         else
-            if conf.peer[i].fromAllowAccessLanAndWan and
-               conf.peer[i].fromAllowAccessLanAndWan == 1 then
-                self.acl_type = 2
+            if conf.peer[i].fromAllowAccess and
+               conf.peer[i].fromAllowAccess == 1 then
+                if conf.peer[i].fromAllowAccessLanAndWan and
+                   conf.peer[i].fromAllowAccessLanAndWan == 1 then
+                    peer.acl_type = 2
+                else
+                    peer.acl_type = 1
+                end
             end
-            if conf.peer[i].toAllowAccessLanAndWan and
-               conf.peer[i].toAllowAccessLanAndWan == 1 then
-                peer.acl_type = 2
+            if conf.peer[i].toAllowAccess and
+               conf.peer[i].toAllowAccess == 1 then
+                if conf.peer[i].toAllowAccessLanAndWan and
+                   conf.peer[i].toAllowAccessLanAndWan == 1 then
+                    self.acl_type = 2
+                else
+                    self.acl_type = 1
+                end
             end
 
             if conf.peer[i].nodeType and conf.peer[i].nodeType == "EDGE" then
@@ -214,4 +224,5 @@ function M.get_traffic()
 end
 
 return M
+
 

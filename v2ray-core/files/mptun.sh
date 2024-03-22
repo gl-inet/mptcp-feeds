@@ -178,6 +178,7 @@ set_proxy() {
     servers=${servers}${host:+,$host}
     port="$(jsonfilter -i $cfg -q -e  '@.tcpTun.port')"
     tcp_route_ips="0.0.0.0/0"
+    [ -e /var/run/mpnode.json ] && tcptun_is_exist=1
 
     local i=0
     local global_cnt=0
@@ -232,8 +233,8 @@ table inet mproxy {
         #如果存在udp聚合peer，则应用这条规则
         ${udp_global_proto:+meta l4proto \$UDP_GOLBAL_PROTO mark set \$UDPMARK accept}
         #tcp代理规则,仅代理公网
-        ip daddr \$PRIVATEIP return
-        ip daddr \$TCP_ROUTE_IPS meta l4proto \$TCPPROTO mark set \$TCPMARK tproxy ip to 127.0.0.1:\$TCP_PROXY_PORT accept
+        ${tcptun_is_exist:+ip daddr \$PRIVATEIP return}
+        ${tcptun_is_exist:+ip daddr \$TCP_ROUTE_IPS meta l4proto \$TCPPROTO mark set \$TCPMARK tproxy ip to 127.0.0.1:\$TCP_PROXY_PORT accept}
     }
 }
 
@@ -263,7 +264,7 @@ mptun_init() {
     set_tcptun "$cfg"
     set_udptun "$cfg" "$dev" "$udpmark"
     set_firewall "$cfg" "$dev"
-    [ -e /var/run/mpnode.json ] && set_proxy "$cfg" "$tcpmark" "$udpmark" 
+    set_proxy "$cfg" "$tcpmark" "$udpmark" 
 }
 
 clean_proxy() {
