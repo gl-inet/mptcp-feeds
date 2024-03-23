@@ -155,7 +155,7 @@ function M.get_status()
         if conf.peer[i].connectionType == "aggregation" then
             network_name = conf.peer[i].name
             self.bond = 1
-            self.acl_type = 2
+            self.acl_type = 1
             peer.bond = 0
         else
             if conf.peer[i].fromAllowAccess and
