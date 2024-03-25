@@ -61,6 +61,11 @@ end
 local function handle_recv_net_config(msg)
 	local node = {}
 	msg = cjson.decode(msg)
+	if not msg or not msg.data or type(msg.data) ~= "table" then
+		log.info("No aggregation and the device is not connected to the device", cjson.encode(msg))
+		return
+	end
+
 	local type = msg.data['type']
 
 	if not type then
@@ -103,6 +108,73 @@ local function handle_recv_net_config(msg)
 	}
 
 	file.writefile('/etc/mptun/mpnet.json', cjson.encode(node.data))
+end
+
+--处理host信息
+local function handle_recv_hosts(msg)
+	msg = cjson.decode(msg)
+	if not msg or not msg.data or #msg.data == 0 then
+		log.err('no host info.')
+	end
+
+	local append = false
+	local hosts_file = "/etc/mphosts"
+
+	for i=1, #msg.data do
+		local ip = msg['data'][i]['ip']
+		local domain = msg['data'][i]['domain']
+		if ip and domain then
+			file.writefile(hosts_file, ip .. ' ' .. domain .. '\n', append)
+			append = true
+		end
+	end
+
+	local c = uci.cursor()
+	local hosts = c:get("dhcp", "@dnsmasq[0]", "addnhosts") or {}
+	if #hosts == 0 then
+		hosts[1] = hosts_file
+	else
+		for i = 1, #hosts do
+			if hosts[i] == hosts_file then
+				return
+			end
+		end
+		hosts[#hosts+1] = hosts_file
+	end
+	c:set("dhcp", "@dnsmasq[0]", "addnhosts", hosts)
+	c:commit("dhcp")
+	sys.exec('/etc/init.d/dnsmasq', 'restart')
+end
+
+local function clear_host()
+	local c = uci.cursor()
+	local hosts = c:get("dhcp", "@dnsmasq[0]", "addnhosts")
+	local hosts_file = "/etc/mphosts"
+
+	if file.access(hosts_file) then
+		sys.exec('rm', hosts_file)
+	end
+	if not hosts or type(hosts) ~= "table" then return end
+
+	local find
+	for i=1, #hosts do
+		if hosts[i] == hosts_file then
+			find = true
+			table.remove(hosts, i)
+			break
+		end
+	end
+
+	if not find then return end
+
+	if #hosts ~= 0 then
+		c:set("dhcp", "@dnsmasq[0]", "addnhosts", hosts)
+	else
+		c:delete("dhcp", "@dnsmasq[0]", "addnhosts")
+	end
+
+	c:commit("dhcp")
+	sys.exec('/etc/init.d/dnsmasq', 'restart')
 end
 
 --上报本地资源信息
@@ -149,8 +221,20 @@ function mp_device.get_net_topology(mac)
 end
 
 function mp_device.get_client_net_config(mac)
-
 	local topic = string.format('/sdwan/cloud/edge/%s/request/get_client_net_config', mac)
+
+	local msg = {
+		ts = os.time(),
+		msgId = get_uuid(),
+		data = {}
+	}
+
+	return topic, msg
+end
+
+function mp_device.get_clinet_hosts(mac)
+	local topic = string.format('/sdwan/cloud/edge/%s/request/get_hosts_config', mac)
+
 	local msg = {
 		ts = os.time(),
 		msgId = get_uuid(),
@@ -203,7 +287,7 @@ local function handle_recv_net_topology(msg)
 end
 
 function mp_device.handle_recv_msg(topic, mac, msg)
-	local valid_topic1, valid_topic2, valid_topic3, valid_topic4, valid_topic5
+	local valid_topic1, valid_topic2, valid_topic3, valid_topic4, valid_topic5, valid_topic6, valid_topic7
 	local is_requset_msg = true
 
 	valid_topic1 = string.format('/sdwan/edge/cloud/%s/request/publish_net_config', mac)
@@ -211,8 +295,8 @@ function mp_device.handle_recv_msg(topic, mac, msg)
 	valid_topic3 = string.format('/sdwan/edge/cloud/%s/request/enable_echo_server', mac)
 	valid_topic4 = string.format('/sdwan/edge/cloud/%s/request/publish_hosts_config', mac)
 	valid_topic5 = string.format('/sdwan/edge/cloud/%s/response/publish_device_net_topology', mac)
-	valid_topic6 = string.format('/sdwan/edge/cloud/%s/request/publish_hosts_config', mac)
-	valid_topic7 = string.format('/sdwan/edge/cloud/%s/response/get_client_net_config', mac)
+	valid_topic6 = string.format('/sdwan/edge/cloud/%s/response/get_client_net_config', mac)
+	valid_topic7 = string.format('/sdwan/edge/cloud/%s/response/get_hosts_config', mac)
 
 	if topic ~= valid_topic1 and topic ~= valid_topic2
 	   and topic ~= valid_topic3 and topic ~= valid_topic4
@@ -221,14 +305,18 @@ function mp_device.handle_recv_msg(topic, mac, msg)
 		return
 	end
 
-	if topic == valid_topic1 or topic == valid_topic7 then
-		handle_recv_net_config(msg)
+	if topic == valid_topic1 or topic == valid_topic6 then
+		local ret = handle_recv_net_config(msg)
+		if not ret then return end
 		start_sdwan()
 	elseif topic == valid_topic2 then
 		stop_sdwan()
+		clear_host()
 	elseif topic == valid_topic5 then
 		is_requset_msg = false
 		handle_recv_net_topology(msg)
+	elseif topic == valid_topic4 or topic == valid_topic7 then
+		handle_recv_hosts(msg)
 	end
 
 	if is_requset_msg then
