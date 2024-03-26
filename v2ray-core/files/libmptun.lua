@@ -108,6 +108,7 @@ local function handle_recv_net_config(msg)
 	}
 
 	file.writefile('/etc/mptun/mpnet.json', cjson.encode(node.data))
+	return true
 end
 
 --处理host信息
