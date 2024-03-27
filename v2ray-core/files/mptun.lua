@@ -182,8 +182,13 @@ function M.get_status()
             else
                 peer.bond = 1
             end
-            if conf.peer[i].edgeType and conf.peer[i].edgeType == "EDGE" then
-                self.bond = 0
+            if conf.peer[i].edgeType then
+                if conf.peer[i].edgeType == "EDGE" then
+                    self.bond = 0
+                end
+                if conf.peer[i].edgeType == "LOCAL_GATEWAY" then
+                    self.type = 1
+                end
             end
         end
         node.self = self
@@ -224,5 +229,4 @@ function M.get_traffic()
 end
 
 return M
-
 
