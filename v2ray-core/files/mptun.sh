@@ -1,3 +1,54 @@
+TYPE="EDGE"
+listenPort=""
+
+gateway_set_tcptun() {
+    local port key
+    local cfg="$1"
+    port="$(jsonfilter -i $cfg -q -e  '@.tcpTun.port')"
+    key="$(jsonfilter -i $cfg -q -e  '@.tcpTun.users[0].key')"
+    mac="$(jsonfilter -i $cfg -q -e  '@.tcpTun.users[0].mac')"
+    [ -z "$port" -o -z "$key" ] && return 1
+cat >/var/run/mpnode.json <<EOF
+{
+  "inbounds": [
+    {
+      "tag": "mptunin",
+      "listen": "0.0.0.0",
+      "port": $port,
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+            {
+            "level": 0,
+            ${mac:+\"email\": \"$mac\",} 
+            "id": "$key"
+            }
+EOF
+    local i=0
+    while true;do
+    let i=i+1
+    mac=$(jsonfilter -i $cfg -q -e  "@.tcpTun.users[$i].mac")
+    key=$(jsonfilter -i $cfg -q -e  "@.tcpTun.users[$i].key")
+    [ -z "$key" ] && break
+cat >>/var/run/mpnode.json <<EOF
+            ,
+            {
+            "level": 0,
+            ${mac:+\"email\": \"$mac\",} 
+            "id": "$key"
+            }    
+EOF
+    done
+cat >>/var/run/mpnode.json <<EOF
+        ]
+      }
+    }
+  ]
+}
+EOF
+    return 0
+}
+
 set_tcptun() {
     local port host key
     local cfg="$1"
@@ -39,9 +90,11 @@ format_udp_cfg() {
     [ -z "$interface" -o -z "$peers" ] && return 1
 
     eval $(echo $interface|jsonfilter -q -e 'address=@.address' -e 'privateKey=@.privateKey')
+    eval $(echo $interface|jsonfilter -q -e 'listenPort=@.listenPort')
 cat >$FILE <<EOF
 [Interface]
 privateKey=$privateKey
+${listenPort:+listenPort=$listenPort}
 EOF
     local i=0
     while true;do
@@ -55,7 +108,7 @@ EOF
 cat >>$FILE <<EOF
 
 [peer]
-endPoint=$endPoint
+${endPoint:+endPoint=$endPoint}
 persistentKeepalive=${persistentKeepalive:=25}
 publicKey=$publicKey
 ${allowedIps:+allowedIps=$allowedIps}
@@ -167,6 +220,16 @@ set_firewall()
         uci set firewall.mptun_local_rule.target='ACCEPT'
     fi
 
+    [ -z "$(uci -q get firewall.mptun_allow_listen)" -a "$TYPE" = "GATEWAY" -a -n "$listenPort" ] && {
+        uci set firewall.mptun_allow_listen=rule
+        uci set firewall.mptun_allow_listen.name='mptun allow listen'
+        uci set firewall.mptun_allow_listen.src="wan"
+        uci add_list firewall.mptun_allow_listen.proto='tcp'
+        uci add_list firewall.mptun_allow_listen.proto='udp'
+        uci set firewall.mptun_allow_listen.dest_port="$listenPort"
+        uci set firewall.mptun_allow_listen.target='ACCEPT'
+    }
+
     uci commit firewall
     /etc/init.d/firewall reload 
 }
@@ -260,6 +323,7 @@ mptun_init() {
     local dev=$2
     local udpmark=$3
     local tcpmark=$4
+    TYPE="$(jsonfilter -i $cfg -q -e  '@.type' || echo EDGE)"
 
     set_tcptun "$cfg"
     set_udptun "$cfg" "$dev" "$udpmark"
@@ -277,10 +341,11 @@ clean_proxy() {
 
 clean_udptun() {
 	[ -n "$(uci -q get firewall.mptun)" ] && {
-		uci del firewall.mptun
-		uci del firewall.lan2mptun
-        uci del firewall.mptun_subnet_rule
-        uci del firewall.mptun_local_rule
+		uci -q del firewall.mptun
+		uci -q del firewall.lan2mptun
+        uci -q del firewall.mptun_subnet_rule
+        uci -q del firewall.mptun_local_rule
+        uci -q del firewall.mptun_allow_listen
 		uci commit firewall
 		/etc/init.d/firewall reload
 	}

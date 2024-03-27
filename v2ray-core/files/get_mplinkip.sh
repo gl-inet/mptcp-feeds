@@ -4,6 +4,9 @@
 FILE_PATH="/tmp/mplinks"
 LOCAL_FILE_PATH="/tmp/local_resource"
 
+#on or off
+DEBUG_IP="off"
+
 flag=""
 res=""
 ip=""
@@ -22,6 +25,7 @@ build_jsonstr()
 
 add_linkinfo_by_json()
 {
+	[ "$DEBUG_IP" = "on" ] && ip="$pub_ip"
 	json_add_object "$1"	
 	json_add_string "name" "$2"
 	build_jsonstr "ipv4" "$ip"
