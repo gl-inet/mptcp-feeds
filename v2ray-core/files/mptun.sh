@@ -1,4 +1,5 @@
 TYPE="EDGE"
+DEBUG_SERVER="$(cat /etc/mptun/debugip 2>/dev/null)"
 listenPort=""
 
 gateway_set_tcptun() {
@@ -56,6 +57,7 @@ set_tcptun() {
     port="$(jsonfilter -i $cfg -q -e  '@.tcpTun.port')"
     key="$(jsonfilter -i $cfg -q -e  '@.tcpTun.users[0].key')"
     [ -z "$host" -o -z "$port" -o -z "$key" ] && return 1
+    [ -n "$DEBUG_SERVER" ] && host="$DEBUG_SERVER"
 cat >/var/run/mpnode.json <<EOF
 {
   "outbounds": [
@@ -104,7 +106,7 @@ EOF
         let i=i+1;
         eval $(echo $peer|jsonfilter -q -e 'endPoint=@.endPoint' -e 'allowedIps=@.allowedIps' \
          -e 'persistentKeepalive=@.persistentKeepalive' -e 'publicKey=@.publicKey')
-
+        [ -n "$DEBUG_SERVER" ] && endPoint="$DEBUG_SERVER":${endPoint##*:}
 cat >>$FILE <<EOF
 
 [peer]
@@ -148,10 +150,12 @@ set_firewall()
 {
     local cfg="$1"
     local DEV="$2"
-    local srcips destips localips
+    local srcips destips localips exitnode
     local i=0
 
     localips=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.allowedSrc")
+    exitnode=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.exitNode")
+
 
     while true;do
             local client=$(jsonfilter -i $cfg -q -e "@.udpTun.clients[$i]")
@@ -228,6 +232,16 @@ set_firewall()
         uci add_list firewall.mptun_allow_listen.proto='udp'
         uci set firewall.mptun_allow_listen.dest_port="$listenPort"
         uci set firewall.mptun_allow_listen.target='ACCEPT'
+
+        uci set firewall.mptun2mptun=forwarding
+        uci set firewall.mptun2mptun.src='mptun'
+        uci set firewall.mptun2mptun.dest='mptun'
+    }
+
+    [ "$exitnode" = "true" ] && {
+        uci set firewall.mptun2wan=forwarding
+        uci set firewall.mptun2wan.src='mptun'
+        uci set firewall.mptun2wan.dest='wan'
     }
 
     uci commit firewall
@@ -251,6 +265,7 @@ set_proxy() {
             local endpoint=$(jsonfilter -i $cfg -q -e "@.udpTun.peers[$i].endPoint")
             local allowedips=$(jsonfilter -i $cfg -q -e "@.udpTun.peers[$i].allowedIps")
             endpoint=${endpoint%:*}
+            [ -n "$DEBUG_SERVER" ] && endpoint="$DEBUG_SERVER"
             servers=${servers}${endpoint:+,$endpoint}
             udp_route_ips=${udp_route_ips}${allowedips:+,$allowedips}
 
@@ -346,6 +361,8 @@ clean_udptun() {
         uci -q del firewall.mptun_subnet_rule
         uci -q del firewall.mptun_local_rule
         uci -q del firewall.mptun_allow_listen
+        uci -q del firewall.mptun2mptun
+        uci -q del firewall.mptun2wan
 		uci commit firewall
 		/etc/init.d/firewall reload
 	}
