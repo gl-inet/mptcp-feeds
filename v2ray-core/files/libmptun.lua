@@ -8,6 +8,13 @@ local uci = require 'uci'
 local mp_device = {}
 
 local access_hosts = "/etc/mphosts"
+local con_hosts = "/etc/mpcon_hosts"
+local access_conf = "/tmp/dnsmasq.d/mpaccess_conf"
+local connet_conf = "/tmp/dnsmasq.d/mpcon_conf"
+local tmp_access_hostsdir = "/tmp/dnsmasq.d/mpaccess"
+local tmp_con_hostsdir = "/tmp/dnsmasq.d/mpcon"
+local tmp_access_hostsname = tmp_access_hostsdir .. "/" .. "mphosts"
+local tmp_con_hostsname = tmp_con_hostsdir .. "/" .. "mpcon_hosts"
 
 local function stop_sdwan()
 	local c = uci.cursor()
@@ -60,14 +67,27 @@ local function build_response_msg(topic, mac)
 	return msg, pub_topic
 end
 
+local function find_hosts_information(domain)
+	for l in io.lines(tmp_con_hostsname) do
+		local info = l:match('% ([%w_-%.]+)')
+		if info and info == domain then
+			return 0
+		end
+	end
+	return 1
+end
+
 local function need_parse_domain(peers)
 	if not peers or type(peers) ~= "table" or #peers == 0 then return 0 end
 
 	local ret = 0
 	for i = 1, #peers do
 		local endPoint = peers[i]['endPoint']
-		if endPoint and string.match(endPoint, "([%a]+):") then
+		if not file.access(tmp_con_hostsname) then
 			return 1
+		end
+		if endPoint and string.match(endPoint, "([%a]+):") then
+			return find_hosts_information(string.match(endPoint, "([%w_-%.]+):"))
 		end
 	end
 	return ret
@@ -126,22 +146,28 @@ local function handle_recv_net_config(msg)
 	return need_parse_domain(udpTun.peers)
 end
 
-local function create_hosts_file(file_name)
-	local c = uci.cursor()
-	local file_list = c:get("dhcp", "@dnsmasq[0]", "addnhosts") or {}
-	if #file_list == 0 then
-		file_list[1] = file_name
-	else
-		for i = 1, #file_list do
-			if file_list[i] == file_name then
-				return
-			end
-		end
-		file_list[#file_list+1] = file_name
+local function create_and_copy_hosts(conf, hostdir, sname, dname)
+	if not conf or not hostdir or not sname or not dname then
+		log.err('<hosts information err.>')
 	end
-	c:set("dhcp", "@dnsmasq[0]", "addnhosts", file_list)
-	c:commit("dhcp")
-	sys.exec('/etc/init.d/dnsmasq', 'restart')
+
+	if not file.access(conf) then
+		file.writefile(conf, 'hostsdir=' .. hostdir)
+	end
+
+	if not file.access(hostdir) then
+		sys.exec('mkdir', hostdir):wait()
+	end
+
+	local restart_flag
+	if not file.access(dname) then
+		restart_flag = true
+	end
+	sys.exec('cp', sname, dname):wait()
+
+	if restart_flag then
+		sys.exec('/etc/init.d/dnsmasq', 'restart')
+	end
 end
 
 --处理组网权限相关的host信息,
@@ -160,37 +186,18 @@ local function handle_recv_hosts(msg)
 			append = true
 		end
 	end
-	create_hosts_file(access_hosts)
+
+	create_and_copy_hosts(access_conf, tmp_access_hostsdir, access_hosts, tmp_access_hostsname)
 end
 
 local function clear_host()
-	local c = uci.cursor()
-	local hosts = c:get("dhcp", "@dnsmasq[0]", "addnhosts")
-
-	if file.access(access_hosts) then
-		sys.exec('rm', access_hosts)
-	end
-	if not hosts or type(hosts) ~= "table" then return end
-
-	local find
-	for i=1, #hosts do
-		if hosts[i] == access_hosts then
-			find = true
-			table.remove(hosts, i)
-			break
-		end
+	if file.access(tmp_access_hostsname) then
+		file.writefile(tmp_access_hostsname, '')
 	end
 
-	if not find then return end
-
-	if #hosts ~= 0 then
-		c:set("dhcp", "@dnsmasq[0]", "addnhosts", hosts)
-	else
-		c:delete("dhcp", "@dnsmasq[0]", "addnhosts")
+	if file.access(tmp_con_hostsname) then
+		file.writefile(tmp_con_hostsname, '')
 	end
-
-	c:commit("dhcp")
-	sys.exec('/etc/init.d/dnsmasq', 'restart'):wait()
 end
 
 --处理云端解析的域名
@@ -203,74 +210,21 @@ local function handle_domain_parse(msg)
 		return
 	end
 
-	if not file.access('/etc/mptun/mpnet.json') then
-		log.err('<handle_con_hosts> No mpnet information.')
-		return
-	end
-
-	local mpnet = cjson.decode(file.readfile('/etc/mptun/mpnet.json'))
-	if not mpnet.udpTun then
-		log.err('<handle_con_hosts> No udpTun information.')
-		return
-	end
-
-	--log.info('mpnet:' .. cjson.encode(mpnet))
-	local peers = mpnet['udpTun']['peers']
-	if not peers or type(peers) ~= "table" then
-		log.err('<handle_con_hosts> No peers information.')
-		return
-	end
-
-	local conf_map = {}
-	--建立映射关系，后续直接修改配置文件
-	for i = 1, #peers do
-		local elem = {}
-		if peers[i]['endPoint'] and string.match(peers[i]['endPoint'], "([%a]+)") then
-			elem.domain = string.match(peers[i]['endPoint'], "([%w_-%.]+):")
-			elem.port = string.match(peers[i]['endPoint'], ":([%d]+)")
-			elem.index = i
-		end
-		conf_map[#conf_map+1] = elem
-	end
-
+	local append = false
 	for i = 1, #msg.data do
 		local domain = msg['data'][i]['domain']
-		if not domain then return end
-		for j = 1, #conf_map do
-			if domain == conf_map[j]['domain'] then
-				conf_map[j].ip = msg['data'][i]['ip'][1]
-				break
-			end
-		end
-	end
-
-	for i = 1, #conf_map do
-		local index = conf_map[i]['index']
-		if conf_map[i]['ip'] then
-			mpnet['udpTun']['peers'][index]['endPoint'] = conf_map[i]['ip'] .. ':' .. conf_map[i]['port']
-		end
-	end
-
-	file.writefile('/etc/mptun/mpnet.json', cjson.encode(mpnet))
-	start_sdwan()
-
-	--[[
-	local append
-	for i = 1, #msg.data do
 		local ips = msg['data'][i]['ip']
-		if ips and type(ips) == "table" and #ips ~= 0 then
-			local domain = msg['data'][i]['domain']
-			for j = 1, #ips do
-				local ip = ips[i]
-				if ip and domain then
-					file.writefile(con_hosts, ip .. ' ' .. domain .. '\n', append)
-					append = true
-				end
+		for j = 1, #ips do
+			local ip = ips[j]
+			if ip and domain then
+				file.writefile(con_hosts, ip .. ' ' .. domain .. '\n', append)
+				append = false
 			end
 		end
 	end
-	create_hosts_file(con_hosts)
-	--]]
+
+	create_and_copy_hosts(connet_conf, tmp_con_hostsdir, con_hosts, tmp_con_hostsname)
+	start_sdwan()
 end
 
 --上报本地资源信息
