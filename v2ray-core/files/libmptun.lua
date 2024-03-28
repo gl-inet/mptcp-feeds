@@ -67,16 +67,6 @@ local function build_response_msg(topic, mac)
 	return msg, pub_topic
 end
 
-local function find_hosts_information(domain)
-	for l in io.lines(tmp_con_hostsname) do
-		local info = l:match('% ([%w_-%.]+)')
-		if info and info == domain then
-			return 0
-		end
-	end
-	return 1
-end
-
 local function need_parse_domain(peers)
 	if not peers or type(peers) ~= "table" or #peers == 0 then return 0 end
 
@@ -87,7 +77,7 @@ local function need_parse_domain(peers)
 			return 1
 		end
 		if endPoint and string.match(endPoint, "([%a]+):") then
-			return find_hosts_information(string.match(endPoint, "([%w_-%.]+):"))
+			return 1
 		end
 	end
 	return ret
@@ -222,7 +212,6 @@ local function handle_domain_parse(msg)
 			end
 		end
 	end
-
 	create_and_copy_hosts(connet_conf, tmp_con_hostsdir, con_hosts, tmp_con_hostsname)
 	start_sdwan()
 end
