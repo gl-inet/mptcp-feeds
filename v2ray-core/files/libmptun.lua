@@ -326,7 +326,7 @@ local function handle_recv_net_topology(msg)
 end
 
 --向云端查询域名对应的公网ip
-function mp_device.request_parse_domain(mac, passback)
+local function request_parse_domain(mac)
 	if not file.access('/etc/mptun/mpnet.json') then return end
 	local idata = cjson.decode(file.readfile('/etc/mptun/mpnet.json'))
 
@@ -367,10 +367,7 @@ function mp_device.request_parse_domain(mac, passback)
 		data = data
 	}
 
-	if passback then
-		return msg, topic
-	end
-	return topic, msg
+	return msg, topic
 end
 
 function mp_device.handle_recv_msg(topic, mac, msg)
@@ -397,7 +394,7 @@ function mp_device.handle_recv_msg(topic, mac, msg)
 		local ret = handle_recv_net_config(msg)
 		if not ret then return end
 		if ret == 1 then 
-			return mp_device.request_parse_domain(mac, true)
+			return request_parse_domain(mac)
 		end
 		start_sdwan()
 	elseif topic == valid_topic2 then
