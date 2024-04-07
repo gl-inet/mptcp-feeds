@@ -73,7 +73,7 @@ local function need_parse_domain(peers)
 	local ret = 0
 	for i = 1, #peers do
 		local endPoint = peers[i]['endPoint']
-		if not file.access(tmp_con_hostsname) then
+		if file.access(tmp_con_hostsname) then
 			return 1
 		end
 		if endPoint and string.match(endPoint, "([%a]+):") then
