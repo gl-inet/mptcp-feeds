@@ -74,16 +74,20 @@ get_link_info()
 		ip6="" pub_ip6=""
 		local up ubus_data up6 ubus6_data
 
-		ubus_data="$(ubus call $item status)"
+		if [ -n "$(echo $item|grep modem)" ]; then
+			ubus_data="$(ubus call ${item}_4 status)"
+		else
+			ubus_data="$(ubus call $item status)"
+		fi
 		up="$(echo $ubus_data|jsonfilter -e "@.up")"
 		[ $up = true ] && online_dev="$(echo $ubus_data|jsonfilter -e "@.l3_device")"
 		[ -n "$online_dev" ] || continue
 
 		ip="$(echo $ubus_data|jsonfilter -e '@["ipv4-address"][0]["address"]')"
 		if [ -n "$(echo $item|grep modem)" ]; then
-			ubus6_data="$(ubus call network.interface.${item}6 status)" 2>/dev/null
-		else
 			ubus6_data="$(ubus call network.interface.${item}_6 status)" 2>/dev/null
+		else
+			ubus6_data="$(ubus call network.interface.${item}6 status)" 2>/dev/null
 		fi
 			
 		[ -n "$ubus6_data" ] && {
@@ -123,7 +127,12 @@ get_local_resource()
 		local online_dev=""
 		local local_ip mask local_gw type
 		local up ubus_data network
-		ubus_data="$(ubus call $item status)"
+
+		if [ -n "$(echo $item|grep modem)" ]; then
+			ubus_data="$(ubus call ${item}_4 status)"
+		else
+			ubus_data="$(ubus call $item status)"
+		fi
 		[ -z "$ubus_data" ] && continue
 		up="$(echo $ubus_data|jsonfilter -e "@.up")"
 		[ $up = true ] && online_dev="$(echo $ubus_data|jsonfilter -e "@.l3_device")"
