@@ -186,7 +186,7 @@ local function clear_host()
 	end
 
 	if file.access(tmp_con_hostsname) then
-		file.writefile(tmp_con_hostsname, '')
+		sys.exec('rm', tmp_con_hostsname)
 	end
 end
 
