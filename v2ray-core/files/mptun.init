@@ -8,6 +8,39 @@ PROG="/usr/bin/mptun"
 
 . /lib/functions/mptun.sh
 
+update_modem_cfg()
+{
+	local modem_iface=$(ubus list|grep interface.modem|grep -v -E '4|6')
+	[ -z "$modem_iface" ] && return
+
+	local modem_name="$(echo $modem_iface|cut -d. -f3)"
+	[ -z "$modem_name" ] && return
+
+	local ubus_data="$(ubus call ${modem_iface}_4 status)"
+	[ -z "$ubus_data" ] && ubus_data="$(ubus call ${modem_iface} status)"
+
+	local up="$(echo $ubus_data|jsonfilter -e "@.up")"
+	local online_dev
+	[ $up = true ] && online_dev="$(echo $ubus_data|jsonfilter -e "@.l3_device")"
+	[ -z "$online_dev" ] && return
+
+	__load_member() {
+		[ "$(echo $1|grep modem)" ] && return
+		local enable=$(uci get mptun.$1.enable)
+		[ -z "$enable" ] && enable='0'
+		[ "$1" != "$modem_name" -a "$1" != "${modem_name}_4" ] && {
+			uci del mptun.$1
+			uci set mptun.${modem_name}_4=interface
+			uci set mptun.${modem_name}_4.enable=$enable
+			uci set mptun.${modem_name}_4.metric='6'
+			uci set mptun.${modem_name}_4.device=$online_dev
+			uci add_list mptun.${modem_name}_4.mptcp_flags='subflow'
+			uci commit mptun
+			sync
+		}
+	}
+	config_foreach __load_member interface
+}
 
 start_service() {
 	config_load "$CONF"
@@ -22,6 +55,8 @@ start_service() {
 	local profile
 	config_get profile "config" "profile"
 	[ -z "$profile" ] && return 1
+
+	update_modem_cfg
 
 	mptun_init "$profile" "$dev" "$udpmark" "$tcpmark"
 
