@@ -205,7 +205,7 @@ function M.get_status()
     end
 
     return {
-        network_name = network_name,
+        network_name = conf.networkName or network_name,
         name = conf.name,
         type = conf.type,
         online = online,
