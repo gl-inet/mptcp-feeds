@@ -25,7 +25,7 @@ update_modem_cfg()
 	[ -z "$online_dev" ] && return
 
 	__load_member() {
-		[ "$(echo $1|grep modem)" ] && return
+		[ -z "$(echo $1|grep modem)" ] && return
 		local enable=$(uci get mptun.$1.enable)
 		[ -z "$enable" ] && enable='0'
 		[ "$1" != "$modem_name" -a "$1" != "${modem_name}_4" ] && {
