@@ -193,25 +193,6 @@ local function clear_host()
 	end
 end
 
---处理云端下发私有IP映射关系至设备端
-local function handle_publish_virtual_ip_info(msg)
-	msg = cjson.decode(msg)
-	if not msg or not msg.data or #msg.data == 0 then
-		log.err('no about virtual ip info.')
-	end
-
-	-- Get mac and virtual IP and then config the firewall
-	for i=1, #msg.data do
-		local mac = msg['data'][i]['mac']
-		local virtualIp = msg['data'][i]['virtualIp']
-		if mac and virtualIp then
-			log.info('mac:',mac," virtualIp:",virtualIp)
-		end
-	end
-
-end
-
-
 --处理云端解析的域名
 local function handle_domain_parse(msg)
 	msg = cjson.decode(msg)
@@ -237,6 +218,25 @@ local function handle_domain_parse(msg)
 	create_and_copy_hosts(connet_conf, tmp_con_hostsdir, con_hosts, tmp_con_hostsname)
 	start_sdwan()
 end
+
+--处理云端下发私有IP映射关系至设备端
+local function handle_publish_virtual_ip_info(msg)
+	msg = cjson.decode(msg)
+	if not msg or not msg.data or #msg.data == 0 then
+		log.err('no about virtual ip info.')
+	end
+
+	-- Get mac and virtual IP and then config the firewall
+	for i=1, #msg.data do
+		local mac = msg['data'][i]['mac']
+		local virtualIp = msg['data'][i]['virtualIp']
+		if mac and virtualIp then
+			log.info('mac:',mac," virtualIp:",virtualIp)
+		end
+	end
+
+end
+
 
 --上报本地资源信息
 function mp_device.report_dev_resource(mac)
@@ -392,6 +392,23 @@ local function request_parse_domain(mac)
 	}
 
 	return msg, topic
+end
+
+--设备端主动上报LAN/WAN侧设备信息到平台
+function mp_device.report_terminal_info(mac)
+	-- running the script and get the data
+	sys.exec('get_mplinkip.sh', 'local'):wait()
+    local wlan_resource = cjson.decode(file.readfile('/tmp/local_resource'))
+    local topic = string.format('/sdwan/cloud/edge/%s/publish/report_terminal_info', mac)
+
+    local msg = {
+        ts = os.time(),
+        msgId = get_uuid(),
+        data = wlan_resource.data
+    }
+
+    log.debug(cjson.encode(msg))
+	return topic, msg
 end
 
 function mp_device.handle_recv_msg(topic, mac, msg)
