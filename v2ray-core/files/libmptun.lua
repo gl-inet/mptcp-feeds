@@ -186,7 +186,7 @@ local function clear_host()
 	end
 
 	if file.access(tmp_con_hostsname) then
-		file.writefile(tmp_con_hostsname, '')
+		sys.exec('rm', tmp_con_hostsname)
 	end
 end
 
@@ -301,6 +301,7 @@ local function handle_recv_net_topology(msg)
 	msg = cjson.decode(msg)
 	local name = msg.data['name']
 	local edgeType = msg.data['edgeType']
+	local networkName = msg.data['networkName']
 
 	local peer_info = {}
 	for i = 1, #msg.data['pointList'] do
@@ -319,6 +320,7 @@ local function handle_recv_net_topology(msg)
 
 	local net_conf = {
 		name = name,
+		networkName = networkName,
 		type = edgeType == "EDGE" and 0 or 1,
 		peer = peer_info
 	}
