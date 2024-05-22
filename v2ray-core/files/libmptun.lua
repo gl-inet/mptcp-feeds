@@ -39,12 +39,13 @@ local function get_uuid()
 end
 
 local function build_response_msg(topic, mac)
-	local valid_topic1, valid_topic2, valid_topic3
+	local valid_topic1, valid_topic2, valid_topic3, valid_topic4
 	local pub_topic
 
 	valid_topic1 = string.format('/sdwan/edge/cloud/%s/request/publish_net_config', mac)
 	valid_topic2 = string.format('/sdwan/edge/cloud/%s/request/stop_sdwan_net', mac)
 	valid_topic3 = string.format('/sdwan/edge/cloud/%s/request/enable_echo_server', mac)
+	valid_topic4 = string.format('/sdwan/edge/cloud/%s/request/publish_virtual_ip_info', mac)
 
 	if topic == valid_topic1 then
 		pub_topic = string.format('/sdwan/cloud/edge/%s/response/publish_net_config', mac)
@@ -52,6 +53,8 @@ local function build_response_msg(topic, mac)
 		pub_topic = string.format('/sdwan/cloud/edge/%s/response/ctrl_sdwan_net_status', mac)
 	elseif topic == valid_topic3 then
 		pub_topic = string.format('/sdwan/cloud/edge/%s/response/enable_echo_server', mac)
+	elseif topic == valid_topic4 then
+		pub_topic = string.format('/sdwan/cloud/edge/%s/response/publish_virtual_ip_info', mac)
 	else
 		pub_topic = string.format('/sdwan/cloud/edge/%s/response/publish_hosts_config', mac)
 	end
@@ -189,6 +192,25 @@ local function clear_host()
 		sys.exec('rm', tmp_con_hostsname)
 	end
 end
+
+--处理云端下发私有IP映射关系至设备端
+local function handle_publish_virtual_ip_info(msg)
+	msg = cjson.decode(msg)
+	if not msg or not msg.data or #msg.data == 0 then
+		log.err('no about virtual ip info.')
+	end
+
+	-- Get mac and virtual IP and then config the firewall
+	for i=1, #msg.data do
+		local mac = msg['data'][i]['mac']
+		local virtualIp = msg['data'][i]['virtualIp']
+		if mac and virtualIp then
+			log.info('mac:',mac," virtualIp:",virtualIp)
+		end
+	end
+
+end
+
 
 --处理云端解析的域名
 local function handle_domain_parse(msg)
@@ -373,7 +395,7 @@ local function request_parse_domain(mac)
 end
 
 function mp_device.handle_recv_msg(topic, mac, msg)
-	local valid_topic1, valid_topic2, valid_topic3, valid_topic4, valid_topic5, valid_topic6, valid_topic7, valid_topic8
+	local valid_topic1, valid_topic2, valid_topic3, valid_topic4, valid_topic5, valid_topic6, valid_topic7, valid_topic8, valid_topic9
 	local is_requset_msg = true
 
 	valid_topic1 = string.format('/sdwan/edge/cloud/%s/request/publish_net_config', mac)
@@ -384,11 +406,13 @@ function mp_device.handle_recv_msg(topic, mac, msg)
 	valid_topic6 = string.format('/sdwan/edge/cloud/%s/response/get_client_net_config', mac)
 	valid_topic7 = string.format('/sdwan/edge/cloud/%s/response/get_hosts_config', mac)
 	valid_topic8 = string.format('/sdwan/edge/cloud/%s/response/query_domain_ip', mac)
+	valid_topic9 = string.format('/sdwan/edge/cloud/%s/request/publish_virtual_ip_info', mac)
 
 	if topic ~= valid_topic1 and topic ~= valid_topic2
 	   and topic ~= valid_topic3 and topic ~= valid_topic4
 	   and topic ~= valid_topic5 and topic ~= valid_topic6
-	   and topic ~= valid_topic7 and topic ~= valid_topic8 then
+	   and topic ~= valid_topic7 and topic ~= valid_topic8
+	   and topic ~= valid_topic9 then
 		return
 	end
 
@@ -409,6 +433,8 @@ function mp_device.handle_recv_msg(topic, mac, msg)
 		handle_recv_hosts(msg)
 	elseif topic == valid_topic8 then
 		handle_domain_parse(msg)
+	elseif topic == valid_topic9 then
+		handle_publish_virtual_ip_info(msg)
 	end
 
 	if is_requset_msg then
