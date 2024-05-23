@@ -232,6 +232,7 @@ local function handle_publish_virtual_ip_info(msg)
 		local virtualIp = msg['data'][i]['virtualIp']
 		if mac and virtualIp then
 			log.info('mac:',mac," virtualIp:",virtualIp)
+
 		end
 	end
 
@@ -394,22 +395,59 @@ local function request_parse_domain(mac)
 	return msg, topic
 end
 
+
 --设备端主动上报LAN/WAN侧设备信息到平台
+local function run_arp_scan()
+    local handle = io.popen("arp-scan -l -x -F '${ip}\\t${mac}' -I eth1")
+    local result = handle:read("*a")
+    handle:close()
+    return result
+end
+
+local function parse_arp_scan_output(output)
+    local ip_mac_list = {}
+    for line in output:gmatch("[^\r\n]+") do
+        local ip, mac = line:match("(%d+%.%d+%.%d+%.%d+)%s+([%x:]+)")
+        if ip and mac then
+            table.insert(ip_mac_list, {ip = ip, mac = mac})
+        end
+    end
+    return ip_mac_list
+end
+
+-- report_terminal_info method impl
 function mp_device.report_terminal_info(mac)
 	-- running the script and get the data
-	sys.exec('get_mplinkip.sh', 'local'):wait()
-    local wlan_resource = cjson.decode(file.readfile('/tmp/local_resource'))
     local topic = string.format('/sdwan/cloud/edge/%s/publish/report_terminal_info', mac)
+	local output = run_arp_scan()
+	-- client list
+	local clients = {}
+	-- get wan devcie information
+	local ip_mac_list = parse_arp_scan_output(output)
+	for _, entry in ipairs(ip_mac_list) do
+		if entry.ip == "0.0.0.0" then entry.ip = '' end
+		table.insert(clients, {ip = entry.ip, mac = entry.mac:lower():gsub(":", ""), accessMode = "wan", hostname = "", online = "online" }) 
+	end
 
+	-- Get lan devcie information
+	local r = ubus.call("gl-clients", "list", {}) or {}
+	for mac, info in pairs(r.clients or {}) do
+		if info.ip == "0.0.0.0" then info.ip = '' end
+		table.insert(clients, {ip = info.ip, mac = info.mac:lower():gsub(":", ""), accessMode = "lan", hostname = info.name, online = info.online and "online" or "offline" })
+	end
+
+	-- build msg and send to cloud
     local msg = {
         ts = os.time(),
         msgId = get_uuid(),
-        data = wlan_resource.data
+        data = clients
     }
-
     log.debug(cjson.encode(msg))
 	return topic, msg
 end
+
+
+
 
 function mp_device.handle_recv_msg(topic, mac, msg)
 	local valid_topic1, valid_topic2, valid_topic3, valid_topic4, valid_topic5, valid_topic6, valid_topic7, valid_topic8, valid_topic9
