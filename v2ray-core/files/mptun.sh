@@ -248,6 +248,99 @@ set_firewall()
     /etc/init.d/firewall reload 
 }
 
+gen_nft_script() {
+    local servers="$1"
+    local tcp_route_ips="$2"
+    local udp_route_ips="$3"
+    local udp_global_proto="$4"
+    local tcptun_is_exist="$5" 
+
+cat > /var/run/mptun.nft << EOF
+#!/usr/sbin/nft -f        
+define SERVER = {$servers}   
+define TCP_PROXY_PORT = 1080          
+${udp_route_ips:+define UDP_ROUTE_IPS = {$udp_route_ips\}}
+define TCP_ROUTE_IPS = {$tcp_route_ips}
+define UDPMARK = "$7"
+define TCPMARK = "$6"                        
+define UDP_GOLBAL_PROTO = {$udp_global_proto}
+
+define BYPASS_IP = {127.0.0.1/32, 224.0.0.0/4, 255.255.255.255/32,169.254.0.0/16,192.0.2.0/24,198.18.0.0/15, \$SERVER}
+define PRIVATEIP = {192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12}
+define TCPPROTO = {tcp}
+
+table inet mproxy {}
+flush table inet mproxy
+table inet mproxy {
+    chain prerouting {
+        type filter hook prerouting priority 0;
+        ip daddr \$BYPASS_IP return
+        #将所有对端子网设置好udp隧道标记，后续路由规则将使用
+        ${udp_route_ips:+ip daddr \$UDP_ROUTE_IPS  mark set \$UDPMARK accept}
+        #如果存在udp聚合peer，则应用这条规则
+        ${udp_global_proto:+meta l4proto \$UDP_GOLBAL_PROTO mark set \$UDPMARK accept}
+        #tcp代理规则,仅代理公网
+        ${tcptun_is_exist:+ip daddr \$PRIVATEIP return}
+        ${tcptun_is_exist:+ip daddr \$TCP_ROUTE_IPS meta l4proto \$TCPPROTO mark set \$TCPMARK tproxy ip to 127.0.0.1:\$TCP_PROXY_PORT accept}
+    }
+}
+
+table inet mpass {}
+flush table inet mpass
+table inet mpass {
+    chain divert {
+        type filter hook prerouting priority -150;
+        #允许tcp代理数据通过防火墙
+        meta l4proto tcp socket transparent 1 meta mark set \$TCPMARK accept
+    }
+}
+EOF
+}
+
+set_ipt_script() {
+    local servers="$1"
+    local tcp_route_ips="$2"
+    local udp_route_ips="$3"
+    local udp_global_proto="$4"
+    local tcptun_is_exist="$5"
+    local tcpmark="$6"
+    local udpmark="$7"
+
+    ipset create mproxy_set hash:net 2>/dev/null
+    ipset flush  mproxy_set 2>/dev/null
+
+    if [ -n "$udp_global_proto" ];then #使用iptables时先不考虑TCP代理
+            ipset add mproxy_set 0.0.0.0/1
+            ipset add mproxy_set 128.0.0.0/1
+    else       
+        for ip in `echo $udp_route_ips|sed 's/,/ /g'`;do
+            if [ "$ip" = "0.0.0.0/0" ];then
+                ipset add mproxy_set 0.0.0.0/1
+                ipset add mproxy_set 128.0.0.0/1
+            else
+                ipset add mproxy_set $ip
+            fi
+        done
+    fi
+
+    local skip_ip="127.0.0.1/32 224.0.0.0/4 255.255.255.255/32 169.254.0.0/16 192.0.2.0/24 198.18.0.0/15 $servers"
+    ipset create mproxy_skip hash:net 2>/dev/null
+    ipset flush  mproxy_skip 2>/dev/null
+    for ip in `echo $skip_ip|sed 's/,/ /g'`;do
+        ipset add mproxy_skip $ip
+    done
+ 
+    local IPTW="iptables -w 5"
+    $IPTW -t mangle -N MPROXY_PREROUTING 2>/dev/null
+    $IPTW -t mangle -C PREROUTING -j MPROXY_PREROUTING
+	[ ! "$?" = "0" ] && {
+        $IPTW -t mangle -I PREROUTING -j MPROXY_PREROUTING
+        $IPTW -t mangle -A MPROXY_PREROUTING -i mptun+ -j RETURN
+        $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_skip dst -j RETURN
+        $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_set dst -j MARK --set-xmark $udpmark/$udpmark
+    }
+}
+
 set_proxy() {
     local servers port host tcp_route_ips udp_route_ips
     local cfg="$1"
@@ -285,49 +378,13 @@ set_proxy() {
         udp_route_ips="$(echo "$udp_route_ips"|sed 's/,0.0.0.0\/0//g'|sed 's/0.0.0.0\/0,//g'|sed 's/0.0.0.0\/0//g')"
         udp_route_ips="$(echo "$udp_route_ips"|sed 's/,::\/0//g'|sed 's/::\/0,//g'|sed 's/::\/0//g')"
     }
-                             
-cat > /var/run/mptun.nft << EOF
-#!/usr/sbin/nft -f        
-define SERVER = {$servers}   
-define TCP_PROXY_PORT = 1080          
-${udp_route_ips:+define UDP_ROUTE_IPS = {$udp_route_ips\}}
-define TCP_ROUTE_IPS = {$tcp_route_ips}
-define UDPMARK = "$3"
-define TCPMARK = "$2"                        
-define UDP_GOLBAL_PROTO = {$udp_global_proto}
-
-define BYPASS_IP = {127.0.0.1/32, 224.0.0.0/4, 255.255.255.255/32,169.254.0.0/16,192.0.2.0/24,198.18.0.0/15, \$SERVER}
-define PRIVATEIP = {192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12}
-define TCPPROTO = {tcp}
-
-table inet mproxy {}
-flush table inet mproxy
-table inet mproxy {
-    chain prerouting {
-        type filter hook prerouting priority 0;
-        ip daddr \$BYPASS_IP return
-        #将所有对端子网设置好udp隧道标记，后续路由规则将使用
-        ${udp_route_ips:+ip daddr \$UDP_ROUTE_IPS  mark set \$UDPMARK accept}
-        #如果存在udp聚合peer，则应用这条规则
-        ${udp_global_proto:+meta l4proto \$UDP_GOLBAL_PROTO mark set \$UDPMARK accept}
-        #tcp代理规则,仅代理公网
-        ${tcptun_is_exist:+ip daddr \$PRIVATEIP return}
-        ${tcptun_is_exist:+ip daddr \$TCP_ROUTE_IPS meta l4proto \$TCPPROTO mark set \$TCPMARK tproxy ip to 127.0.0.1:\$TCP_PROXY_PORT accept}
-    }
-}
-
-table inet mpass {}
-flush table inet mpass
-table inet mpass {
-    chain divert {
-        type filter hook prerouting priority -150;
-        #允许tcp代理数据通过防火墙
-        meta l4proto tcp socket transparent 1 meta mark set \$TCPMARK accept
-    }
-}
-EOF
  
-    nft -f /var/run/mptun.nft
+    if [ -e "/usr/sbin/nft" ];then
+        gen_nft_script "$servers" "$tcp_route_ips" "$udp_route_ips" "$udp_global_proto" "$tcptun_is_exist" "$2" "$3"
+        nft -f /var/run/mptun.nft
+    else
+        set_ipt_script "$servers" "$tcp_route_ips" "$udp_route_ips" "$udp_global_proto" "$tcptun_is_exist" "$2" "$3"
+    fi
     /usr/bin/proxy-route.sh "set"
 }
 

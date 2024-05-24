@@ -41,7 +41,7 @@ endef
 
 define Package/v2ray-core
   $(call Package/v2ray/template)
-  DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle +kmod-nft-tproxy +kmod-nft-socket +bind-dig
+  DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle +kmod-ipt-tproxy  +bind-dig
 endef
 
 define Package/v2ray-example
