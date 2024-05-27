@@ -231,8 +231,7 @@ local function handle_publish_virtual_ip_info(msg)
 		local mac = msg['data'][i]['mac']
 		local virtualIp = msg['data'][i]['virtualIp']
 		if mac and virtualIp then
-			log.info('mac:',mac," virtualIp:",virtualIp)
-
+			log.info('mac:',mac," virtualIp:",virtualIp)	
 		end
 	end
 
