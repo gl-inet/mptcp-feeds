@@ -308,20 +308,22 @@ set_ipt_script() {
 
     ipset create mproxy_set hash:net 2>/dev/null
     ipset flush  mproxy_set 2>/dev/null
+    for ip in `echo $udp_route_ips|sed 's/,/ /g'`;do
+        if [ "$ip" = "0.0.0.0/0" ];then
+            #ipset add mproxy_set 0.0.0.0/1
+            #ipset add mproxy_set 128.0.0.0/1
+            logger -t mptun "ignore 0.0.0.0/0 route"
+        else
+            ipset add mproxy_set $ip
+        fi
+    done
 
-    if [ -n "$udp_global_proto" ];then #使用iptables时先不考虑TCP代理
-            ipset add mproxy_set 0.0.0.0/1
-            ipset add mproxy_set 128.0.0.0/1
-    else       
-        for ip in `echo $udp_route_ips|sed 's/,/ /g'`;do
-            if [ "$ip" = "0.0.0.0/0" ];then
-                ipset add mproxy_set 0.0.0.0/1
-                ipset add mproxy_set 128.0.0.0/1
-            else
-                ipset add mproxy_set $ip
-            fi
-        done
-    fi
+    local private_ip="192.168.0.0/16 10.0.0.0/8 172.16.0.0/12"
+    ipset create mproxy_privateip hash:net 2>/dev/null
+    ipset flush  mproxy_privateip 2>/dev/null
+    for ip in `echo $private_ip|sed 's/,/ /g'`;do
+        ipset add mproxy_privateip $ip
+    done
 
     local skip_ip="127.0.0.1/32 224.0.0.0/4 255.255.255.255/32 169.254.0.0/16 192.0.2.0/24 198.18.0.0/15 $servers"
     ipset create mproxy_skip hash:net 2>/dev/null
@@ -332,13 +334,30 @@ set_ipt_script() {
  
     local IPTW="iptables -w 5"
     $IPTW -t mangle -N MPROXY_PREROUTING 2>/dev/null
+    $IPTW -t mangle -F MPROXY_PREROUTING 2>/dev/null
     $IPTW -t mangle -C PREROUTING -j MPROXY_PREROUTING
 	[ ! "$?" = "0" ] && {
         $IPTW -t mangle -I PREROUTING -j MPROXY_PREROUTING
         $IPTW -t mangle -A MPROXY_PREROUTING -i mptun+ -j RETURN
-        $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_skip dst -j RETURN
-        $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_set dst -j MARK --set-xmark $udpmark/$udpmark
     }
+    $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_skip dst -j RETURN
+    $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_set dst -j MARK --set-xmark $udpmark/$udpmark
+
+    $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst -j RETURN
+    [ -n "$udp_global_proto" ] && {
+        $IPTW -t mangle -A MPROXY_PREROUTING -p udp -j MARK --set-xmark $udpmark/$udpmark
+        $IPTW -t mangle -A MPROXY_PREROUTING -p icmp -j MARK --set-xmark $udpmark/$udpmark
+    }
+    [ -n "$tcptun_is_exist" ] && {
+        $IPTW -t mangle -A MPROXY_PREROUTING -p tcp -j TPROXY --on-port 1080 --tproxy-mark $tcpmark/$tcpmark
+
+        $IPTW -t mangle -N MPASS 2>/dev/null
+        $IPTW -t mangle -F MPASS 2>/dev/null
+        $IPTW -t mangle -I MPROXY_PREROUTING -p tcp -m socket -j MPASS
+        $IPTW -t mangle -A MPASS -j MARK --set-mark $tcpmark/$tcpmark
+        $IPTW -t mangle -A MPASS -j ACCEPT
+    }
+
 }
 
 set_proxy() {
@@ -406,8 +425,17 @@ mptun_init() {
 clean_proxy() {
 	#rm  /etc/nftables.d/mptcp-proxy.nft 2>/dev/null
 	/usr/bin/proxy-route.sh "clean" 2>/dev/null
-	nft delete table inet mpass 2>/dev/null
-    nft delete table inet mproxy 2>/dev/null
+    if [ -e "/usr/sbin/nft" ];then
+	    nft delete table inet mpass 2>/dev/null
+        nft delete table inet mproxy 2>/dev/null
+    else
+        local IPTW="iptables -w 5"
+        $IPTW -t mangle -D PREROUTING -j MPROXY_PREROUTING
+        $IPTW -t mangle -F MPROXY_PREROUTING 2>/dev/null
+        $IPTW -t mangle -F MPASS 2>/dev/null
+        $IPTW -t mangle -X MPROXY_PREROUTING 2>/dev/null
+        $IPTW -t mangle -X MPASS 2>/dev/null
+    fi
     [ -e /var/run/mpnode.json ] && rm /var/run/mpnode.json
 }
 
