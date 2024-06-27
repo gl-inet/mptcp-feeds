@@ -9,7 +9,7 @@
       //"port": 1883,
       "protocol": "dokodemo-door",
       "settings": {
-        "network": "tcp",
+        "network": "tcp,udp",
         //"address": "127.0.0.1",
         //"port": 1883,
         "followRedirect": true

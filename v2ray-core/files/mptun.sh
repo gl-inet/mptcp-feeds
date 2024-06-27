@@ -180,6 +180,7 @@ set_firewall()
         uci set firewall.mptun.forward='DROP'
         uci set firewall.mptun.masq='1'
         uci set firewall.mptun.mtu_fix='1'
+        uci set firewall.mptun.custom_chains='0'
         uci set firewall.lan2mptun=forwarding
         uci set firewall.lan2mptun.src='lan'
         uci set firewall.lan2mptun.dest='mptun'
@@ -204,9 +205,11 @@ set_firewall()
     for i in $srcips;do
         uci add_list firewall.mptun_subnet_rule.src_ip="$i"
     done
-    uci -q delete firewall.mptun_subnet_rule.dest_ip
+    #uci -q delete firewall.mptun_subnet_rule.dest_ip
+    uci -q delete firewall.mptun_subnet_rule.extra
     for i in $destips;do
-        uci add_list firewall.mptun_subnet_rule.dest_ip="$i"
+        uci set firewall.mptun_subnet_rule.extra='-i mptun+ -m conntrack --ctstate DNAT'
+        #uci add_list firewall.mptun_subnet_rule.dest_ip="$i"
     done
     if [ -z "$srcips" -o -z "$destips" ];then
         uci set firewall.mptun_subnet_rule.target='DROP'
@@ -344,17 +347,22 @@ set_ipt_script() {
     $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_set dst -j MARK --set-xmark $udpmark/$udpmark
 
     $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst -j RETURN
-    [ -n "$udp_global_proto" ] && {
-        $IPTW -t mangle -A MPROXY_PREROUTING -p udp -j MARK --set-xmark $udpmark/$udpmark
-        $IPTW -t mangle -A MPROXY_PREROUTING -p icmp -j MARK --set-xmark $udpmark/$udpmark
-    }
+    #[ -n "$udp_global_proto" ] && {
+    #    $IPTW -t mangle -A MPROXY_PREROUTING -j CONNMARK --restore-mark --nfmask $udpmark --ctmask $udpmark
+    #    $IPTW -t mangle -A MPROXY_PREROUTING -p udp -m mark --mark 0x0/$udpmark -j MARK --set-xmark $udpmark/$udpmark
+    #    $IPTW -t mangle -A MPROXY_PREROUTING -p icmp -m mark --mark 0x0/$udpmark -j MARK --set-xmark $udpmark/$udpmark
+    #    $IPTW -t mangle -A MPROXY_PREROUTING -j CONNMARK --save-mark --nfmask $udpmark --ctmask $udpmark
+    #}
     [ -n "$tcptun_is_exist" ] && {
-        $IPTW -t mangle -A MPROXY_PREROUTING -p tcp -j TPROXY --on-port 1080 --tproxy-mark $tcpmark/$tcpmark
+        $IPTW -t mangle -A MPROXY_PREROUTING -p udp -m mark --mark 0x0/$tcpmark -j TPROXY --on-port 1080 --tproxy-mark $tcpmark/$tcpmark
+        $IPTW -t mangle -A MPROXY_PREROUTING -p tcp -m mark --mark 0x0/$tcpmark -j TPROXY --on-port 1080 --tproxy-mark $tcpmark/$tcpmark
 
         $IPTW -t mangle -N MPASS 2>/dev/null
         $IPTW -t mangle -F MPASS 2>/dev/null
         $IPTW -t mangle -I MPROXY_PREROUTING -p tcp -m socket -j MPASS
-        $IPTW -t mangle -A MPASS -j MARK --set-mark $tcpmark/$tcpmark
+        $IPTW -t mangle -A MPASS -j CONNMARK --restore-mark --nfmask $tcpmark --ctmask $tcpmark
+        $IPTW -t mangle -A MPASS -m mark --mark 0x0/$tcpmark -j MARK --set-mark $tcpmark/$tcpmark
+        $IPTW -t mangle -A MPASS -j CONNMARK --save-mark --nfmask $tcpmark --ctmask $tcpmark
         $IPTW -t mangle -A MPASS -j ACCEPT
     }
 
