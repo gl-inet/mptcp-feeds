@@ -300,6 +300,34 @@ table inet mpass {
 EOF
 }
 
+set_dns() {
+    local dns1
+    local dns2
+    #TODO: 临时先通过服务器地址区分，后续需要在节点配置DNS服务器并下发
+    if [ -n "$(cat /etc/mptun/mpnet.json |grep 120.79.254.231)" ];then
+        dns1="223.5.5.5"
+        dns2="223.6.6.6"
+    else
+        dns1="1.1.1.1"
+        dns2="1.0.0.1"
+    fi
+
+cat > /var/run/mptun_dns.json << EOF
+{
+  "dns": {
+    "servers": [
+      "$dns1",
+      "$dns2"
+    ]
+  }
+}
+EOF
+}
+
+remove_dns() {
+    rm /var/run/mptun_dns.json
+}
+
 set_ipt_script() {
     local servers="$1"
     local tcp_route_ips="$2"
@@ -328,7 +356,8 @@ set_ipt_script() {
         ipset add mproxy_privateip $ip
     done
 
-    local skip_ip="127.0.0.1/32 224.0.0.0/4 255.255.255.255/32 169.254.0.0/16 192.0.2.0/24 198.18.0.0/15 $servers"
+    #local skip_ip="127.0.0.1/32 224.0.0.0/4 255.255.255.255/32 169.254.0.0/16 192.0.2.0/24 198.18.0.0/15 $servers"
+    local skip_ip="127.0.0.1/32 224.0.0.0/4 255.255.255.255/32 169.254.0.0/16 192.0.2.0/24 198.18.0.0/15"
     ipset create mproxy_skip hash:net 2>/dev/null
     ipset flush  mproxy_skip 2>/dev/null
     for ip in `echo $skip_ip|sed 's/,/ /g'`;do
@@ -343,19 +372,26 @@ set_ipt_script() {
         $IPTW -t mangle -I PREROUTING -j MPROXY_PREROUTING
         $IPTW -t mangle -A MPROXY_PREROUTING -i mptun+ -j RETURN
     }
+
+
     $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_skip dst -j RETURN
     $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_set dst -j MARK --set-xmark $udpmark/$udpmark
 
-    $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst -j RETURN
-    #[ -n "$udp_global_proto" ] && {
+    if [ -n "$tcptun_is_exist" ];then
+        $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst  -p udp ! --dport 53 -j RETURN
+        $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst  -p tcp ! --dport 53 -j RETURN
+    else
+        $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst -j RETURN
+    fi
+    [ -n "$udp_global_proto" ] && {
     #    $IPTW -t mangle -A MPROXY_PREROUTING -j CONNMARK --restore-mark --nfmask $udpmark --ctmask $udpmark
     #    $IPTW -t mangle -A MPROXY_PREROUTING -p udp -m mark --mark 0x0/$udpmark -j MARK --set-xmark $udpmark/$udpmark
-    #    $IPTW -t mangle -A MPROXY_PREROUTING -p icmp -m mark --mark 0x0/$udpmark -j MARK --set-xmark $udpmark/$udpmark
+        $IPTW -t mangle -A MPROXY_PREROUTING -p icmp -m mark --mark 0x0/$udpmark -j MARK --set-xmark $udpmark/$udpmark
     #    $IPTW -t mangle -A MPROXY_PREROUTING -j CONNMARK --save-mark --nfmask $udpmark --ctmask $udpmark
-    #}
+    }
     [ -n "$tcptun_is_exist" ] && {
-        $IPTW -t mangle -A MPROXY_PREROUTING -p udp -m mark --mark 0x0/$tcpmark -j TPROXY --on-port 1080 --tproxy-mark $tcpmark/$tcpmark
-        $IPTW -t mangle -A MPROXY_PREROUTING -p tcp -m mark --mark 0x0/$tcpmark -j TPROXY --on-port 1080 --tproxy-mark $tcpmark/$tcpmark
+        $IPTW -t mangle -A MPROXY_PREROUTING -p udp  -j TPROXY --on-port 1080 --tproxy-mark $tcpmark/$tcpmark
+        $IPTW -t mangle -A MPROXY_PREROUTING -p tcp  -j TPROXY --on-port 1080 --tproxy-mark $tcpmark/$tcpmark
 
         $IPTW -t mangle -N MPASS 2>/dev/null
         $IPTW -t mangle -F MPASS 2>/dev/null
@@ -364,6 +400,7 @@ set_ipt_script() {
         $IPTW -t mangle -A MPASS -m mark --mark 0x0/$tcpmark -j MARK --set-mark $tcpmark/$tcpmark
         $IPTW -t mangle -A MPASS -j CONNMARK --save-mark --nfmask $tcpmark --ctmask $tcpmark
         $IPTW -t mangle -A MPASS -j ACCEPT
+        set_dns
     }
 
 }
@@ -416,7 +453,6 @@ set_proxy() {
 }
 
 
-
 mptun_init() {
     local cfg=$1
     local dev=$2
@@ -427,7 +463,7 @@ mptun_init() {
     set_tcptun "$cfg"
     set_udptun "$cfg" "$dev" "$udpmark"
     set_firewall "$cfg" "$dev"
-    set_proxy "$cfg" "$tcpmark" "$udpmark" 
+    set_proxy "$cfg" "$tcpmark" "$udpmark"
 }
 
 clean_proxy() {
@@ -474,4 +510,5 @@ clean_udptun() {
 mptun_clean() {
     clean_proxy
     clean_udptun
+    remove_dns
 }
