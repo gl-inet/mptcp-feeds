@@ -21,8 +21,8 @@ local ERR_PARAMETER = 1
     @in array   interfaces Interfaces information that participate in aggregation network.
     @in string  interfaces.name Name of the interface.
     @in bool    interfaces.enable Indicates whether the interface is enabled.
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "set_config"]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","set_config",{"interfaces":[{"name":"wan","enable":true},{"name":"secondwan","enable":true}, {"name":"wwan","enable":true},{"name":"tethering","enable":true},{"name":"modem_0000_4","enable":false}]}]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": []}
 --]]
 function M.set_config(params)
     local c = uci.cursor()
@@ -75,7 +75,7 @@ end
     @out string  interfaces.name Name of the interface.
     @out bool    interfaces.enable Indicates whether the interface is enabled.
 
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "get_config"]}
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_config"]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"interfaces":[{"name":"wan","enable":true},{"name":"secondwan","enable":true},{"name":"wwan","enable":false},{"name":"tethering","enable":false}]}}
 --]]
 function M.get_config()
@@ -98,9 +98,10 @@ end
     @method-name: get_status
     @method-desc: get mptun network status
 
-    @out string name name of the device in the network
-    @out bool  online Whether the device is in an aggregated network
+    @out string name Name of the device in the network
+    @out bool   online Whether the device is in an aggregated network
     @out string network_name The network name field obtained from the cloud platform
+    @out number type Native information(0: edge 1:gateway)
     @out array ?nodes Information about connections to other nodes, If the object does not exist, means the current device does not belong to any network
     @out object nodes.self information of the node
     @out string nodes.self.name Name of the node
@@ -108,11 +109,11 @@ end
     @out number nodes.self.type Type of the node(0:edge, 1:gateway)
     @out number nodes.self.acl_type Type of the access policy(0:none, 1:allow to local 2:allow to subnet)
     @out number nodes.self.bond Indicates whether the connection is bonding.(0:none 1:aggregation 2:s2s 3:aggregation+s2s)
-    @out object nodes.peer information of the peer(device self)
+    @out object nodes.peer Information of the peer(device self)
     @out number nodes.peer.acl_type Type of the access policy(0:none, 1:allow to local 2:allow to subnet)
     @out number nodes.peer.bond Indicates whether the connection is bonding.(0:none 1:aggregation 2:s2s 3:aggregation+s2s)
 
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "get_status"]}
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_status"]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"network_name":"test","type":0,"name":"mt6000","nodes":[{"self":{"acl_type":2,"type":1,"name":"test","status":1,"bond":1},"peer":{"acl_type":0,"bond":0}}],"online":true}}
 ]]
 function M.get_status()
@@ -218,12 +219,12 @@ end
     @method-name: get_traffic
     @method-desc: get traffic information
 
-    @out number tx The amount of traffic the device sends per second on the network
-    @out number rx The amount of traffic the device receive per second on the network
-    @out array  ?path.$iface.tx iface:[wan|wwan|secondwan|tethering|modem] Number of bytes received by the interface.
-    @out array  ?path.$iface.rx iface:[wan|wwan|secondwan|tethering|modem] Number of bytes sent by the interface
+    @out object path An object that stores all aggregated interface traffic information.
+    @out object path.$iface An object that stores traffic information about an aggregate interface. iface:[wan|wwan|secondwan|tethering|modem]
+    @out array  ?path.$iface.tx Interface upload traffic
+    @out array  ?path.$iface.rx Interface download traffic
 
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["NsPHdkXtENoaotxVZWLqJorU52O7J0OI", "mptun", "get_traffic"]}
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_traffic"]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"path":{"wan":{"rx":[13373,15484,13626],"tx":[16677,18612,12387]},"secondwan":{"rx":[19838,20956,11762],"tx":[11486,12092,6762]}}}}
 ]]
 function M.get_traffic()
