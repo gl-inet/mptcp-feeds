@@ -120,21 +120,18 @@ function M.get_status()
     local c = uci.cursor()
     local cloud_enable = c:get("gl-cloud", "@cloud[0]", "enable") or "0"
     local conf = {}
-    local enable
 
     if cloud_enable ~= "0" then
         ubus.call('gl-cloud', 'mpdevice_net_topology')
         if fs.access('/etc/mptun/mpnet_conf') then
             conf = cjson.decode(utils.readfile("/etc/mptun/mpnet_conf") or "{}")
         end
-        enable = c:get("mptun", "global", "enable") or "0"
     end
 
     local online = true
     local loop_cnt = 0
 
-    if not conf.peer or #conf.peer == 0
-       or enable == "0" then
+    if not conf.peer or #conf.peer == 0 then
         online = false
     else
         loop_cnt = #conf.peer
@@ -143,6 +140,7 @@ function M.get_status()
     local i
     local nodes = {}
     local network_name
+    local network_status = conf.networkStatus or "disable"
     for i = 1, loop_cnt do
         local node = {}
         local self = {}
@@ -156,6 +154,10 @@ function M.get_status()
             self.status = 1
         else
             self.status = 2
+        end
+
+        if self.type == 1 and network_status == "disable" then
+            self.status = 0
         end
 
         peer.acl_type = 0
