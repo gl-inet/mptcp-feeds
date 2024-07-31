@@ -150,11 +150,12 @@ set_firewall()
 {
     local cfg="$1"
     local DEV="$2"
-    local srcips destips localips exitnode
+    local srcips destips localips exitnode type
     local i=0
 
     localips=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.allowedSrc")
     exitnode=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.exitNode")
+    type=$(jsonfilter -i $cfg -q -e "@.type")
 
     while true;do
             local client=$(jsonfilter -i $cfg -q -e "@.udpTun.clients[$i]")
@@ -240,7 +241,7 @@ set_firewall()
         uci set firewall.mptun2mptun.dest='mptun'
     }
 
-    [ "$exitnode" = "true" ] && {
+    [ "$exitnode" = "true" -o "$type" = "EXIT" ] && {
         uci set firewall.mptun2wan=forwarding
         uci set firewall.mptun2wan.src='mptun'
         uci set firewall.mptun2wan.dest='wan'
@@ -332,6 +333,7 @@ set_ipt_script() {
     local tcptun_is_exist="$5"
     local tcpmark="$6"
     local udpmark="$7"
+    local exitflag
 
     ipset create mproxy_set hash:net 2>/dev/null
     ipset flush  mproxy_set 2>/dev/null
@@ -339,6 +341,7 @@ set_ipt_script() {
         if [ "$ip" = "0.0.0.0/0" ];then
             #ipset add mproxy_set 0.0.0.0/1
             #ipset add mproxy_set 128.0.0.0/1
+            exitflag=1
             logger -t mptun "ignore 0.0.0.0/0 route"
         else
             ipset add mproxy_set $ip
@@ -390,6 +393,9 @@ set_ipt_script() {
         $IPTW -t mangle -A MPROXY_PREROUTING -p icmp -m mark --mark 0x0/$udpmark -j MARK --set-xmark $udpmark/$udpmark
     #    $IPTW -t mangle -A MPROXY_PREROUTING -j CONNMARK --save-mark --nfmask $udpmark --ctmask $udpmark
     }
+
+    [ -n "$exitflag" ] && $IPTW -t mangle -A MPROXY_PREROUTING -j MARK --set-xmark $udpmark/$udpmark
+
     [ -n "$tcptun_is_exist" ] && {
         $IPTW -t mangle -A MPROXY_PREROUTING -p udp  -j TPROXY --on-port 1080 --tproxy-mark $tcpmark/$tcpmark
         $IPTW -t mangle -A MPROXY_PREROUTING -p tcp  -j TPROXY --on-port 1080 --tproxy-mark $tcpmark/$tcpmark
@@ -409,6 +415,7 @@ set_ipt_script() {
 set_proxy() {
     local servers port host tcp_route_ips udp_route_ips
     local cfg="$1"
+    local type="$(jsonfilter -i $cfg -q -e  '@.type')"
     host="$(jsonfilter -i $cfg -q -e  '@.tcpTun.address')"
     servers=${servers}${host:+,$host}
     port="$(jsonfilter -i $cfg -q -e  '@.tcpTun.port')"
@@ -449,6 +456,7 @@ set_proxy() {
         nft -f /var/run/mptun.nft
     else
         set_ipt_script "$servers" "$tcp_route_ips" "$udp_route_ips" "$udp_global_proto" "$tcptun_is_exist" "$2" "$3"
+        [ "$type" = "EXIT" ] && iptables -w 5 -t mangle -D MPROXY_PREROUTING -j MARK --set-xmark $3/$3 2>/dev/null
     fi
     /usr/bin/proxy-route.sh "set"
 }
