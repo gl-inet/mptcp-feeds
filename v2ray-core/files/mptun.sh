@@ -156,7 +156,6 @@ set_firewall()
     localips=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.allowedSrc")
     exitnode=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.exitNode")
 
-
     while true;do
             local client=$(jsonfilter -i $cfg -q -e "@.udpTun.clients[$i]")
             [ -z "$client" ] &&  break
@@ -301,23 +300,20 @@ EOF
 }
 
 set_dns() {
-    local dns1
-    local dns2
+    local dns
+    local cfg=$(uci -q get mptun.config.profile)
     #TODO: 临时先通过服务器地址区分，后续需要在节点配置DNS服务器并下发
-    if [ -n "$(cat /etc/mptun/mpnet.json |grep 120.79.254.231)" ];then
-        dns1="223.5.5.5"
-        dns2="223.6.6.6"
-    else
-        dns1="1.1.1.1"
-        dns2="1.0.0.1"
+    if [ -n "$cfg" -a -e "$cfg" ]; then
+        dns=$(jsonfilter -i $cfg -q -e "@.dns")
     fi
+
+    [ -z "$dns" ] && dns=1.1.1.1
 
 cat > /var/run/mptun_dns.json << EOF
 {
   "dns": {
     "servers": [
-      "$dns1",
-      "$dns2"
+      "$dns"
     ]
   }
 }
