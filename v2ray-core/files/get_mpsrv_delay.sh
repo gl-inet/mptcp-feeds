@@ -29,7 +29,7 @@ add_array_member()
 {
 	json_add_object
 	json_add_string "regionCode" "$1"
-	json_add_string "ip" "$2"
+	json_add_string "latencyTime" "$2"
 	json_close_object
 }
 

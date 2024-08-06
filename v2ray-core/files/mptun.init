@@ -5,6 +5,8 @@ START=89
 
 CONF="mptun"
 PROG="/usr/bin/mptun"
+MPTUN_RESOLVFILE=/tmp/resolv.conf.mptun/resolv.conf.auto
+DEFAULT_RESOLVFILE=/tmp/resolv.conf.d/resolv.conf.auto
 
 . /lib/functions/mptun.sh
 
@@ -45,7 +47,7 @@ update_modem_cfg()
 start_service() {
 	config_load "$CONF"
 
-	local enabled dev udpmark tcpmark
+	local enabled dev udpmark tcpmark resolvfile use_exit dns
 	config_get_bool enabled "global" "enable" "0"
 	config_get dev "global" "mptun" "mptun0"
 	config_get udpmark "global" "udpmark" "0x2"
@@ -57,6 +59,24 @@ start_service() {
 	[ -z "$profile" ] && return 1
 
 	update_modem_cfg
+
+	resolvfile=$(uci get dhcp.@dnsmasq[0].resolvfile)
+	[ "$resolvfile" != "$MPTUN_RESOLVFILE" -a "$resolvfile" != "$DEFAULT_RESOLVFILE" ] && {
+		uci set mptun.config.sys_resolvfile="$resolvfile"
+		uci commit mptun
+	}
+
+	config_get use_exit "global" "use_exit" "0"
+	config_get dns "global" "dns" "127.0.0.1"
+	[ "$use_exit" = "1" -a "$dns" != "127.0.0.1" ] && {
+		mkdir -p /tmp/resolv.conf.mptun
+		touch $MPTUN_RESOLVFILE
+		uci set dhcp.@dnsmasq[0].resolvfile="$MPTUN_RESOLVFILE"
+		uci commit dhcp
+		echo "nameserver $dns" > $MPTUN_RESOLVFILE
+		/etc/init.d/dnsmasq reload
+	}
+	sync
 
 	mptun_init "$profile" "$dev" "$udpmark" "$tcpmark"
 
@@ -75,7 +95,18 @@ start_service() {
 	echo c >/proc/net/nf_conntrack
 }
 
-stop_service() {  
-    [ -e "/var/run/mpnode.json" ] && killall -9 $PROG
+stop_service() {
+	local resolvfile sys_resolvfile
+	[ -e "/var/run/mpnode.json" ] && killall -9 $PROG
 	mptun_clean
-}  
+
+	[ -e $MPTUN_RESOLVFILE ] && rm -rf /tmp/resolv.conf.mptun
+	resolvfile=$(uci get dhcp.@dnsmasq[0].resolvfile)
+	sys_resolvfile=$(uci get mptun.config.sys_resolvfile)
+	[ "$resolvfile" = "$MPTUN_RESOLVFILE" ] && {
+		uci set dhcp.@dnsmasq[0].resolvfile="$sys_resolvfile"
+		uci commit dhcp
+		sync
+		/etc/init.d/dnsmasq reload
+	}
+}
