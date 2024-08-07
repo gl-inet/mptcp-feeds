@@ -461,6 +461,23 @@ set_proxy() {
     /usr/bin/proxy-route.sh "set"
 }
 
+stop_service_by_gl_session() {
+    ubus call gl-session call "$1" >/dev/null
+}
+
+stop_conflict_service() {
+    local wgclient_params='{"module":"wg-client", "func":"stop", "params":{}}'
+    local ovpnclient_params='{"module":"ovpn-client", "func":"stop", "params":{}}'
+    local tor_params='{"module":"tor", "func":"set_config", "params":{"enable":false, "manual": false}}'
+    local tailscale_params='{"module":"tailscale", "func":"set_config", "params":{"enabled":false}}'
+    local zerotier_params='{"module":"zerotier", "func":"set_config", "params":{"enabled":false}}'
+
+    stop_service_by_gl_session "$wgclient_params" &
+    stop_service_by_gl_session "$ovpnclient_params" &
+    stop_service_by_gl_session "$tor_params" &
+    stop_service_by_gl_session "$tailscale_params" &
+    stop_service_by_gl_session "$zerotier_params" &
+}
 
 mptun_init() {
     local cfg=$1
@@ -468,6 +485,8 @@ mptun_init() {
     local udpmark=$3
     local tcpmark=$4
     TYPE="$(jsonfilter -i $cfg -q -e  '@.type' || echo EDGE)"
+
+    stop_conflict_service
 
     set_tcptun "$cfg"
     set_udptun "$cfg" "$dev" "$udpmark"
