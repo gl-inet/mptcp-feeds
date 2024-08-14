@@ -53,12 +53,12 @@ get_ping_ret()
 
 	[ $(ip_is_valid $2) -ne 0 ] && {
 		logger -s -t $TAG "$2 is not a correct ip address"
-		echo "$1:9999.999" >> $TMP_FILE
+		echo "$1:-1" >> $TMP_FILE
 		return
 	}
 
 	ret=$(ping $2 -A -c3 -W2|tail -n 1|awk -F'=' '{print $2}'|awk -F'/' '{print $2}')
-	[ -z "$ret" ] && ret=9999.999
+	[ -z "$ret" ] && ret=-1
 
 	echo "$1:$ret" >> $TMP_FILE
 }
