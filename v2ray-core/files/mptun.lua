@@ -122,7 +122,7 @@ function M.get_status()
     local conf = {}
 
     if cloud_enable ~= "0" then
-        ubus.call('gl-cloud', 'mpdevice_net_topology')
+        ubus.call('gl-cloud', 'notify', {type = 'astrowarp/get_device_net_topology'})
         if fs.access('/etc/mptun/mpnet_conf') then
             conf = cjson.decode(utils.readfile("/etc/mptun/mpnet_conf") or "{}")
         end
