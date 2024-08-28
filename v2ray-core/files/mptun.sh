@@ -143,7 +143,7 @@ set_udptun() {
         uci commit network
         /etc/init.d/network reload
     }
-    
+
 }
 
 set_firewall()
@@ -171,35 +171,31 @@ set_firewall()
     srcips="$(echo "$srcips"|sed 's/,/ /g')"
     destips="$(echo "$destips"|sed 's/,/ /g')"
 
-    [ -z "$(uci -q get firewall.mptun)" ] && {
-        uci set firewall.mptun=zone
-        uci set firewall.mptun.name='mptun'
-        uci set firewall.mptun.device="${DEV:=mptun}"
-        uci set firewall.mptun.input='DROP'
-        uci set firewall.mptun.output='ACCEPT'
-        uci set firewall.mptun.forward='DROP'
-        uci set firewall.mptun.masq='1'
-        uci set firewall.mptun.mtu_fix='1'
-        uci set firewall.mptun.custom_chains='0'
-        uci set firewall.lan2mptun=forwarding
-        uci set firewall.lan2mptun.src='lan'
-        uci set firewall.lan2mptun.dest='mptun'
-    }
+    uci set firewall.mptun=zone
+    uci set firewall.mptun.name='mptun'
+    uci set firewall.mptun.device="${DEV:=mptun}"
+    uci set firewall.mptun.input='DROP'
+    uci set firewall.mptun.output='ACCEPT'
+    uci set firewall.mptun.forward='DROP'
+    uci set firewall.mptun.masq='1'
+    uci set firewall.mptun.mtu_fix='1'
+    uci set firewall.mptun.custom_chains='0'
+    uci set firewall.lan2mptun=forwarding
+    uci set firewall.lan2mptun.src='lan'
+    uci set firewall.lan2mptun.dest='mptun'
 
-    [ -z "$(uci -q get firewall.mptun_subnet_rule)" ] && {
-        uci set firewall.mptun_subnet_rule=rule
-        uci set firewall.mptun_subnet_rule.name='mptun subnet rule'
-        uci set firewall.mptun_subnet_rule.src="mptun"
-        uci set firewall.mptun_subnet_rule.dest='*'
-        uci add_list firewall.mptun_subnet_rule.proto='all'
-    }
+    uci set firewall.mptun_subnet_rule=rule
+    uci set firewall.mptun_subnet_rule.name='mptun subnet rule'
+    uci set firewall.mptun_subnet_rule.src="mptun"
+    uci set firewall.mptun_subnet_rule.dest='*'
+    uci -q delete firewall.mptun_subnet_rule.proto
+    uci add_list firewall.mptun_subnet_rule.proto='all'
 
-    [ -z "$(uci -q get firewall.mptun_local_rule)" ] && {
-        uci set firewall.mptun_local_rule=rule
-        uci set firewall.mptun_local_rule.name='mptun local rule'
-        uci set firewall.mptun_local_rule.src="mptun"
-        uci add_list firewall.mptun_local_rule.proto='all'
-    }
+    uci set firewall.mptun_local_rule=rule
+    uci set firewall.mptun_local_rule.name='mptun local rule'
+    uci set firewall.mptun_local_rule.src="mptun"
+    uci -q delete firewall.mptun_local_rule.proto
+    uci add_list firewall.mptun_local_rule.proto='all'
 
     uci -q delete firewall.mptun_subnet_rule.src_ip
     for i in $srcips;do
@@ -227,10 +223,11 @@ set_firewall()
         uci set firewall.mptun_local_rule.target='ACCEPT'
     fi
 
-    [ -z "$(uci -q get firewall.mptun_allow_listen)" -a "$TYPE" = "GATEWAY" -a -n "$listenPort" ] && {
+    [ "$TYPE" = "GATEWAY" -a -n "$listenPort" ] && {
         uci set firewall.mptun_allow_listen=rule
         uci set firewall.mptun_allow_listen.name='mptun allow listen'
         uci set firewall.mptun_allow_listen.src="wan"
+        uci -q delete firewall.mptun_allow_listen.proto
         uci add_list firewall.mptun_allow_listen.proto='tcp'
         uci add_list firewall.mptun_allow_listen.proto='udp'
         uci set firewall.mptun_allow_listen.dest_port="$listenPort"
@@ -489,6 +486,7 @@ mptun_init() {
     set_udptun "$cfg" "$dev" "$udpmark"
     set_firewall "$cfg" "$dev"
     set_proxy "$cfg" "$tcpmark" "$udpmark"
+    sync
 }
 
 clean_proxy() {
