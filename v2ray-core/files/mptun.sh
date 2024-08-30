@@ -244,6 +244,10 @@ set_firewall()
         uci set firewall.mptun2wan.dest='wan'
     }
 
+    [ "$type" = "GATEWAY" ] && {
+        ip rule del from all iif mptun0 lookup mptcp_mptun0 2>/dev/null
+        ip rule add from all iif mptun0 lookup mptcp_mptun0
+    }
     uci commit firewall
     /etc/init.d/firewall reload 
 }
@@ -505,6 +509,7 @@ clean_proxy() {
         $IPTW -t mangle -D FORWARD -i mptun0 -o mptun0 -j MARK --set-xmark 0x5/0x5 2>/dev/null
         $IPTW -t nat -D POSTROUTING -m mark --mark 0x5 -j RETURN 2>/dev/null
     fi
+    ip rule del from all iif mptun0 lookup mptcp_mptun0 2>/dev/null
     [ -e /var/run/mpnode.json ] && rm /var/run/mpnode.json
 }
 
