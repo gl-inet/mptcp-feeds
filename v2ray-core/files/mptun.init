@@ -44,6 +44,12 @@ update_modem_cfg()
 	config_foreach __load_member interface
 }
 
+update_conf() {
+	[ -z "$1" ] && return
+	local inited=$(uci -q get mptun.$1.inited)
+	update_devinfo "$1"
+}
+
 start_service() {
 	config_load "$CONF"
 
@@ -52,6 +58,8 @@ start_service() {
 	config_get dev "global" "mptun" "mptun0"
 	config_get udpmark "global" "udpmark" "0x2"
 	config_get tcpmark "global" "tcpmark" "0x1"
+
+	config_foreach update_conf interface
 
 	[ "$enabled" -eq "1" ] || return 1
 	local profile

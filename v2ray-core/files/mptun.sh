@@ -477,6 +477,18 @@ stop_conflict_service() {
     stop_service_by_gl_session "$zerotier_params" &
 }
 
+update_devinfo() {
+    [ -z "$1" -o -n "$(echo $1|grep modem)" ] && return
+    local status=$(ubus call network.interface.$1 status 2>/dev/null)
+    [ -z "$status" ] && return
+    local netdev=$(echo $status|jsonfilter -e '@.device' 2>/dev/null)
+    local sdev=$(uci get mptun.$1.device)
+    [ -z "$netdev" -o "$netdev" = "$sdev" ] && return
+    uci set mptun.$1.device=$netdev
+    uci commit mptun
+    sync
+}
+
 mptun_init() {
     local cfg=$1
     local dev=$2
