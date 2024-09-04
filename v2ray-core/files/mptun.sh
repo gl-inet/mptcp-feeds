@@ -173,7 +173,7 @@ set_firewall()
 
     uci set firewall.mptun=zone
     uci set firewall.mptun.name='mptun'
-    uci set firewall.mptun.device="${DEV:=mptun}"
+    uci set firewall.mptun.device="${DEV:=mptun0}"
     uci set firewall.mptun.input='DROP'
     uci set firewall.mptun.output='ACCEPT'
     uci set firewall.mptun.forward='DROP'
@@ -249,7 +249,7 @@ set_firewall()
         ip rule add from all iif mptun0 lookup mptcp_mptun0
     }
     uci commit firewall
-    /etc/init.d/firewall reload 
+    /etc/init.d/firewall reload 2>/dev/null
 }
 
 gen_nft_script() {
@@ -323,7 +323,7 @@ EOF
 }
 
 remove_dns() {
-    rm /var/run/mptun_dns.json
+    [ -e /var/run/mptun_dns.json ] && rm /var/run/mptun_dns.json
 }
 
 set_ipt_script() {
@@ -470,11 +470,20 @@ stop_conflict_service() {
     local tailscale_params='{"module":"tailscale", "func":"set_config", "params":{"enabled":false}}'
     local zerotier_params='{"module":"zerotier", "func":"set_config", "params":{"enabled":false}}'
 
-    stop_service_by_gl_session "$wgclient_params" &
-    stop_service_by_gl_session "$ovpnclient_params" &
-    stop_service_by_gl_session "$tor_params" &
-    stop_service_by_gl_session "$tailscale_params" &
-    stop_service_by_gl_session "$zerotier_params" &
+    local wgclient_disabled=$(uci -q get network.wgclient.disabled)
+    [ "$wgclient_disabled" = "0" ] && stop_service_by_gl_session "$wgclient_params"
+
+    local wgclient_disabled=$(uci -q get network.ovpnclient.disabled)
+    [ "$ovpnclient_disabled" = "0" ] && stop_service_by_gl_session "$ovpnclient_params"
+
+    local tor_enable=$(uci -q get tor.global.enable)
+    [ "$tor_enable" = "1" ] && stop_service_by_gl_session "$tor_params"
+
+    local tailscale_enabled=$(uci -q get tailscale.settings.enabled)
+    [ "$tailscale_enabled" = "1" ] && stop_service_by_gl_session "$tailscale_params"
+
+    local zerotier_enabled=$(uci -q get zerotier.gl.enabled)
+    [ "$zerotier_enabled" = "1" ] && stop_service_by_gl_session "$zerotier_params"
 }
 
 update_devinfo() {
@@ -513,7 +522,7 @@ clean_proxy() {
         nft delete table inet mproxy 2>/dev/null
     else
         local IPTW="iptables -w 5"
-        $IPTW -t mangle -D PREROUTING -j MPROXY_PREROUTING
+        $IPTW -t mangle -D PREROUTING -j MPROXY_PREROUTING 2>/dev/null
         $IPTW -t mangle -F MPROXY_PREROUTING 2>/dev/null
         $IPTW -t mangle -F MPASS 2>/dev/null
         $IPTW -t mangle -X MPROXY_PREROUTING 2>/dev/null
@@ -535,7 +544,7 @@ clean_udptun() {
         uci -q del firewall.mptun2mptun
         uci -q del firewall.mptun2wan
         uci commit firewall
-        /etc/init.d/firewall reload
+        /etc/init.d/firewall reload 2>/dev/null
     }
 
     [ -n "$(uci -q get network.mpudptun_rule)" ] && {
@@ -553,4 +562,5 @@ mptun_clean() {
     clean_proxy
     clean_udptun
     remove_dns
+    sync
 }
