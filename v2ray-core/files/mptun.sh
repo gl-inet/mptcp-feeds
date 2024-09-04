@@ -128,7 +128,7 @@ set_udptun() {
     local MARK=$3
 
     format_udp_cfg "$1" "${TMPFILE}" || return 1
-    ip link del dev "${DEV}" 2>/dev/null                                                
+    ip link del dev "${DEV}" 2>/dev/null
     ip link add dev "${DEV}" type wireguard
     [ -n "$MTU" ] && ip link set mtu "$MTU" "${DEV}" 
     wg setconf "${DEV}" "${TMPFILE}" || return 1
@@ -368,7 +368,7 @@ set_ipt_script() {
     $IPTW -t mangle -N MPROXY_PREROUTING 2>/dev/null
     $IPTW -t mangle -F MPROXY_PREROUTING 2>/dev/null
     $IPTW -t mangle -C PREROUTING -j MPROXY_PREROUTING
-	[ ! "$?" = "0" ] && {
+    [ ! "$?" = "0" ] && {
         $IPTW -t mangle -I PREROUTING -j MPROXY_PREROUTING
         $IPTW -t mangle -A MPROXY_PREROUTING -i mptun+ -j RETURN
     }
@@ -506,10 +506,10 @@ mptun_init() {
 }
 
 clean_proxy() {
-	#rm  /etc/nftables.d/mptcp-proxy.nft 2>/dev/null
-	/usr/bin/proxy-route.sh "clean" 2>/dev/null
+    #rm  /etc/nftables.d/mptcp-proxy.nft 2>/dev/null
+    /usr/bin/proxy-route.sh "clean" 2>/dev/null
     if [ -e "/usr/sbin/nft" ];then
-	    nft delete table inet mpass 2>/dev/null
+        nft delete table inet mpass 2>/dev/null
         nft delete table inet mproxy 2>/dev/null
     else
         local IPTW="iptables -w 5"
@@ -526,27 +526,27 @@ clean_proxy() {
 }
 
 clean_udptun() {
-	[ -n "$(uci -q get firewall.mptun)" ] && {
-		uci -q del firewall.mptun
-		uci -q del firewall.lan2mptun
+    [ -n "$(uci -q get firewall.mptun)" ] && {
+        uci -q del firewall.mptun
+        uci -q del firewall.lan2mptun
         uci -q del firewall.mptun_subnet_rule
         uci -q del firewall.mptun_local_rule
         uci -q del firewall.mptun_allow_listen
         uci -q del firewall.mptun2mptun
         uci -q del firewall.mptun2wan
-		uci commit firewall
-		/etc/init.d/firewall reload
-	}
+        uci commit firewall
+        /etc/init.d/firewall reload
+    }
 
-	[ -n "$(uci -q get network.mpudptun_rule)" ] && {
-		uci del network.mpudptun_rule
-		uci commit network
-		/etc/init.d/network reload
-	}
-	config_load "$CONF"
-	local DEV
-	config_get DEV "global" "mptun" "mptun0"
-	ip link del dev "${DEV}" 2>/dev/null
+    [ -n "$(uci -q get network.mpudptun_rule)" ] && {
+        uci del network.mpudptun_rule
+        uci commit network
+        /etc/init.d/network reload
+    }
+    config_load "$CONF"
+    local DEV
+    config_get DEV "global" "mptun" "mptun0"
+    ip link del dev "${DEV}" 2>/dev/null
 }
 
 mptun_clean() {
