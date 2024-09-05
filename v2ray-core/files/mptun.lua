@@ -101,12 +101,12 @@ end
     @out string name Name of the device in the network
     @out bool   online Whether the device is in an aggregated network
     @out string network_name The network name field obtained from the cloud platform
-    @out number type Native information(0: edge 1:gateway)
+    @out number type Native information(0: edge 1:cloud gateway 2: local gateway)
     @out array ?nodes Information about connections to other nodes, If the object does not exist, means the current device does not belong to any network
     @out object nodes.self information of the node
     @out string nodes.self.name Name of the node
     @out number nodes.self.status Indicates whether the node is online.(0:offline 1:online 2:warning)
-    @out number nodes.self.type Type of the node(0:edge, 1:gateway)
+    @out number nodes.self.type Type of the node(0:edge, 1:cloud gateway 2 local gateway)
     @out number nodes.self.acl_type Type of the access policy(0:none, 1:allow to local 2:allow to subnet)
     @out number nodes.self.bond Indicates whether the connection is bonding.(0:none 1:aggregation 2:s2s 3:aggregation+s2s)
     @out object nodes.peer Information of the peer(device self)
@@ -146,7 +146,14 @@ function M.get_status()
         local self = {}
         local peer = {}
         self.name = conf.peer[i].name
-        self.type = conf.peer[i].nodeType == "CLOUD_GATEWAY" and 1 or 0
+
+        if conf.peer[i].nodeType == "CLOUD_GATEWAY" then
+            self.type = 1
+        elseif conf.peer[i].edgeType and conf.peer[i].edgeType == "LOCAL_GATEWAY" then
+            self.type = 2
+        else
+            self.type = 0
+        end
 
         if conf.peer[i].status == "offline" or conf.peer[i].status == "not_active" then
             self.status = 0
@@ -162,43 +169,37 @@ function M.get_status()
 
         peer.acl_type = 0
         self.acl_type = 0
-
+        self.bond = 0
+        peer.bond = 0
         if conf.peer[i].connectionType == "aggregation" then
             network_name = conf.peer[i].name
             self.bond = 1
             self.acl_type = 1
-            peer.bond = 0
         else
             if conf.peer[i].fromAllowAccess and
                conf.peer[i].fromAllowAccess == 1 then
-                if conf.peer[i].fromAllowAccessLanAndWan and
-                   conf.peer[i].fromAllowAccessLanAndWan == 1 then
-                    peer.acl_type = 2
-                else
-                    peer.acl_type = 1
-                end
+                peer.acl_type = 2
             end
             if conf.peer[i].toAllowAccess and
                conf.peer[i].toAllowAccess == 1 then
-                if conf.peer[i].toAllowAccessLanAndWan and
-                   conf.peer[i].toAllowAccessLanAndWan == 1 then
-                    self.acl_type = 2
-                else
+                self.acl_type = 2
+            end
+
+            if conf.peer[i].nodeType and conf.peer[i].nodeType ~= "EDGE" then
+                peer.bond = 1
+            end
+
+            if conf.peer[i].toAsInternetExit and conf.peer[i].toAsInternetExit == 1 then
+                self.bond = 1
+                if self.acl_type ~= 2 then
                     self.acl_type = 1
                 end
             end
 
-            if conf.peer[i].nodeType and conf.peer[i].nodeType == "EDGE" then
-                peer.bond = 0
-            else
+            if conf.peer[i].fromAsInternetExit and conf.peer[i].fromAsInternetExit == 1 then
                 peer.bond = 1
-            end
-            if conf.peer[i].edgeType then
-                if conf.peer[i].edgeType == "EDGE" then
-                    self.bond = 0
-                end
-                if conf.peer[i].edgeType == "LOCAL_GATEWAY" then
-                    self.type = 1
+                if peer.acl_type ~= 2 then
+                    peer.acl_type = 1
                 end
             end
         end
@@ -210,7 +211,7 @@ function M.get_status()
     return {
         network_name = conf.networkName or network_name,
         name = conf.name,
-        type = conf.type,
+        type = conf.type == 0 and 0 or 2,
         online = online,
         nodes = nodes
     }
