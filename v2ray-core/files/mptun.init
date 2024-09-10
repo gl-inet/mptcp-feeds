@@ -117,16 +117,4 @@ stop_service() {
 		sync
 		/etc/init.d/dnsmasq reload
 	}
-	iptables -t nat -F SDWAN_IP_MAPPING 2>/dev/null
-	iptables -t nat -F SDWAN_IP_MAPPING_SNAT 2>/dev/null
-
-	iptables -t nat -D PREROUTING -j SDWAN_IP_MAPPING 2>/dev/null
-	iptables -t nat -D OUTPUT -j SDWAN_IP_MAPPING 2>/dev/null
-	iptables -t nat -D POSTROUTING -j SDWAN_IP_MAPPING_SNAT 2>/dev/null
-
-	iptables -t nat -X SDWAN_IP_MAPPING 2>/dev/null
-	iptables -t nat -X SDWAN_IP_MAPPING_SNAT 2>/dev/null
-
-	lanmark=$(uci get mptun.global.lanmark 2>/dev/null || echo "0x4")
-	iptables -t mangle -D FORWARD -i br-lan -o br-lan -m comment --comment SDWAN_IP_MAPPING_MARK -j MARK --set-xmark $lanmark/$lanmark 2>/dev/null
 }
