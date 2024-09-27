@@ -96,6 +96,7 @@ define Package/v2ray-core/install
 	$(INSTALL_DIR) $(1)/etc/mptun/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/config.json $(1)/etc/mptun/
 	$(INSTALL_DATA) $(CURDIR)/files/basic.json $(1)/etc/mptun/
+	$(INSTALL_DATA) $(CURDIR)/files/dnsmasq.conf.mptun $(1)/etc/
 
 	$(INSTALL_DIR) $(1)/etc/config/
 	$(INSTALL_CONF) $(CURDIR)/files/mptun.conf $(1)/etc/config/mptun
@@ -108,6 +109,9 @@ define Package/v2ray-core/install
 	$(INSTALL_DIR) $(1)/usr/lib/oui-httpd/rpc
 	$(CP) $(CURDIR)/files/mptun.lua $(1)/usr/lib/oui-httpd/rpc/mptun
 	$(STAGING_DIR_HOSTPKG)/bin/luac -o $(1)/usr/lib/oui-httpd/rpc/mptun $(1)/usr/lib/oui-httpd/rpc/mptun
+
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) $(CURDIR)/files/51-aw_upgrade_compat.sh  $(1)/etc/uci-defaults
 endef
 
 define Package/v2ray-example/install

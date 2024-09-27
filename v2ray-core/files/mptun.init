@@ -5,8 +5,6 @@ START=89
 
 CONF="mptun"
 PROG="/usr/bin/mptun"
-MPTUN_RESOLVFILE=/tmp/resolv.conf.mptun/resolv.conf.auto
-DEFAULT_RESOLVFILE=/tmp/resolv.conf.d/resolv.conf.auto
 
 . /lib/functions/mptun.sh
 
@@ -53,7 +51,7 @@ update_conf() {
 start_service() {
 	config_load "$CONF"
 
-	local enabled dev udpmark tcpmark resolvfile use_exit dns
+	local enabled dev udpmark tcpmark use_exit dns
 	config_get_bool enabled "global" "enable" "0"
 	config_get dev "global" "mptun" "mptun0"
 	config_get udpmark "global" "udpmark" "0x2"
@@ -67,24 +65,6 @@ start_service() {
 	[ -z "$profile" ] && return 1
 
 	update_modem_cfg
-
-	resolvfile=$(uci get dhcp.@dnsmasq[0].resolvfile)
-	[ "$resolvfile" != "$MPTUN_RESOLVFILE" -a "$resolvfile" != "$DEFAULT_RESOLVFILE" ] && {
-		uci set mptun.config.sys_resolvfile="$resolvfile"
-		uci commit mptun
-	}
-
-	config_get use_exit "global" "use_exit" "0"
-	config_get dns "global" "dns" "127.0.0.1"
-	[ "$use_exit" = "1" -a "$dns" != "127.0.0.1" ] && {
-		mkdir -p /tmp/resolv.conf.mptun
-		touch $MPTUN_RESOLVFILE
-		uci set dhcp.@dnsmasq[0].resolvfile="$MPTUN_RESOLVFILE"
-		uci commit dhcp
-		echo "nameserver $dns" > $MPTUN_RESOLVFILE
-		/etc/init.d/dnsmasq reload
-		ln -snf /tmp/resolv.conf.d/resolv.conf.auto /etc/resolv.conf
-	}
 	sync
 
 	mptun_init "$profile" "$dev" "$udpmark" "$tcpmark"
@@ -95,6 +75,7 @@ start_service() {
 	procd_set_param command "$PROG" run
 	procd_append_param command -config "/etc/mptun/basic.json" -config "/var/run/mpnode.json" -format json
 	[ -f "/var/run/mptun_dns.json" ] && procd_append_param command -config "/var/run/mptun_dns.json"
+	[ -f "/var/run/mptun_dns_policy.json" ] && procd_append_param command -config "/var/run/mptun_dns_policy.json"
 	procd_set_param limits core="unlimited"
 	procd_set_param limits nofile="1000000 1000000"
 	procd_set_param stdout 1
@@ -105,18 +86,6 @@ start_service() {
 }
 
 stop_service() {
-	local resolvfile sys_resolvfile
 	[ -e "/var/run/mpnode.json" ] && killall -9 $PROG
 	mptun_clean
-
-	[ -e $MPTUN_RESOLVFILE ] && rm -rf /tmp/resolv.conf.mptun
-	resolvfile=$(uci get dhcp.@dnsmasq[0].resolvfile)
-	sys_resolvfile=$(uci get mptun.config.sys_resolvfile)
-	[ "$resolvfile" = "$MPTUN_RESOLVFILE" ] && {
-		uci set dhcp.@dnsmasq[0].resolvfile="$sys_resolvfile"
-		uci commit dhcp
-		sync
-		/etc/init.d/dnsmasq reload
-	}
-	ln -snf /tmp/resolv.conf /etc/resolv.conf
 }

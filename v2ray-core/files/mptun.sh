@@ -151,6 +151,7 @@ set_firewall()
     local cfg="$1"
     local DEV="$2"
     local srcips destips localips exitnode type
+    local use_exit=$(uci -q get mptun.global.use_exit)
     local i=0
 
     localips=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.allowedSrc")
@@ -222,6 +223,27 @@ set_firewall()
     else
         uci set firewall.mptun_local_rule.target='ACCEPT'
     fi
+
+     [ "$use_exit" = "1" ] && {
+        uci set firewall.dns_mptun=redirect
+        uci set firewall.dns_mptun.name='dns for mptun'
+        uci set firewall.dns_mptun.src='lan'
+        uci set firewall.dns_mptun.src_dport='53'
+        uci set firewall.dns_mptun.dest='lan'
+        uci set firewall.dns_mptun.dest_port='1553'
+        uci add_list firewall.dns_mptun.proto='udp'
+        uci add_list firewall.dns_mptun.proto='tcp'
+        uci set firewall.dns_mptun.enabled='1'
+        uci set firewall.dns_mptun_guest=redirect
+        uci set firewall.dns_mptun_guest.name='dns for mptun guest'
+        uci set firewall.dns_mptun_guest.src='guest'
+        uci set firewall.dns_mptun_guest.src_dport='53'
+        uci set firewall.dns_mptun_guest.dest='guest'
+        uci set firewall.dns_mptun_guest.dest_port='1553'
+        uci add_list firewall.dns_mptun_guest.proto='udp'
+        uci add_list firewall.dns_mptun_guest.proto='tcp'
+        uci set firewall.dns_mptun_guest.enabled='1'
+     }
 
     [ "$TYPE" = "GATEWAY" -a -n "$listenPort" ] && {
         uci set firewall.mptun_allow_listen=rule
@@ -302,28 +324,58 @@ EOF
 }
 
 set_dns() {
-    local dns
-    local cfg=$(uci -q get mptun.config.profile)
-    #TODO: 临时先通过服务器地址区分，后续需要在节点配置DNS服务器并下发
-    if [ -n "$cfg" -a -e "$cfg" ]; then
-        dns=$(jsonfilter -i $cfg -q -e "@.dns")
-    fi
+    local dns=$(uci -q get mptun.global.dns)
+    local use_exit=$(uci -q get mptun.global.use_exit)
+    [ -z "$dns" ] && {
+        local cfg=$(uci -q get mptun.config.profile)
+        if [ -n "$cfg" -a -e "$cfg" ]; then
+            dns=$(jsonfilter -i $cfg -q -e "@.dns")
+        fi
+    }
+    [ -z "$dns" ] && return
+    [ ! "$use_exit" = "1" ] && return
 
-    [ -z "$dns" ] && dns=1.1.1.1
-
-cat > /var/run/mptun_dns.json << EOF
-{
-  "dns": {
-    "servers": [
-      "$dns"
-    ]
-  }
-}
-EOF
+    [ -f /var/run/dnsmasq/dnsmasq.mptun.pid ] && kill -9 $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
+    [ -f /tmp/dnsmasq.d/mpaccess_conf ] && ln -sf /tmp/dnsmasq.d/mpaccess_conf /tmp/dnsmasq.d.mptun/mpaccess_conf
+    [ -d /tmp/dnsmasq.d/mpaccess ] && ln -sf /tmp/dnsmasq.d/mpaccess /tmp/dnsmasq.d.mptun/mpaccess
+    /usr/sbin/dnsmasq -C /etc/dnsmasq.conf.mptun -x /var/run/dnsmasq/dnsmasq.mptun.pid --server=$dns --no-resolv
 }
 
 remove_dns() {
+    kill -9 $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
     [ -e /var/run/mptun_dns.json ] && rm /var/run/mptun_dns.json
+    [ -e /var/run/mptun_dns_policy.json ] && rm /var/run/mptun_dns_policy.json
+    rm -rf /tmp/dnsmasq.d.mptun 2>/dev/null
+}
+
+set_ip_policy(){
+    local list="$1"
+    local i
+    for i in $list;do
+        ipset add mproxy_skip $i
+    done
+}
+
+set_domain_policy(){
+    local list_j="$1"
+    local list="$(echo $list_j|sed 's/\",//g;s/\[//g;s/\]//g;s/\"//g;')"
+    local i
+    local dir="/tmp/dnsmasq.d.mptun"
+    local file="$dir/mptun_policy"
+    mkdir -p "$dir"
+    echo "#Automatically generated, do not edit" >$file
+    for i in $list;do
+       echo "server=/$i/127.0.0.1#53" >>$file
+       echo "ipset=/$i/mproxy_skip" >>$file
+    done
+}
+
+set_policy(){
+    local file="/etc/mptun/policy.json"
+    local ips="$(jsonfilter -i $file  -e '@.alwaysUseLocalExitIpList'|sed 's/\",//g;s/\[//g;s/\]//g;s/\"//g;')"
+    local domains="$(jsonfilter -i $file  -e '@.alwaysUseLocalExitDomainList')"
+    [ -n "$ips" ] && set_ip_policy "$ips"
+    [ -n "$domains" ] && set_domain_policy "$domains"
 }
 
 set_ipt_script() {
@@ -380,8 +432,8 @@ set_ipt_script() {
     $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_set dst -j MARK --set-xmark $udpmark/$udpmark
 
     if [ -n "$tcptun_is_exist" ];then
-        $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst  -p udp ! --dport 53 -j RETURN
-        $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst  -p tcp ! --dport 53 -j RETURN
+        $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst  -j RETURN
+        $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst  -j RETURN
     else
         $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst -j RETURN
     fi
@@ -405,9 +457,9 @@ set_ipt_script() {
         $IPTW -t mangle -A MPASS -m mark --mark 0x0/$tcpmark -j MARK --set-mark $tcpmark/$tcpmark
         $IPTW -t mangle -A MPASS -j CONNMARK --save-mark --nfmask $tcpmark --ctmask $tcpmark
         $IPTW -t mangle -A MPASS -j ACCEPT
-        set_dns
     }
-
+    set_policy
+    set_dns
 }
 
 set_proxy() {
@@ -543,6 +595,8 @@ clean_udptun() {
         uci -q del firewall.mptun_allow_listen
         uci -q del firewall.mptun2mptun
         uci -q del firewall.mptun2wan
+        uci -q del firewall.dns_mptun
+        uci -q del firewall.dns_mptun_guest
         uci commit firewall
         /etc/init.d/firewall reload 2>/dev/null
     }
