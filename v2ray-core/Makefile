@@ -27,7 +27,15 @@ GO_PKG_LDFLAGS_X:= \
 	$(GO_PKG).build=OpenWrt \
 	$(GO_PKG).version=$(PKG_VERSION)
 
-PKG_BUILD_DEPENDS:=lua/host
+PKG_BUILD_DEPENDS:=lua/host luajit2/host
+
+define NGX_LUAC
+if [ "$(CONFIG_NGINX_USE_LUAJIT)" == "y" ];then \
+	$(STAGING_DIR_HOSTPKG)/bin/luajit_host.sh $(1) $(2); \
+else \
+	$(STAGING_DIR_HOSTPKG)/bin/luac -o $(1) $(2); \
+fi
+endef
 
 include $(INCLUDE_DIR)/package.mk
 include ../lang/golang/golang-package.mk
@@ -108,7 +116,7 @@ define Package/v2ray-core/install
 
 	$(INSTALL_DIR) $(1)/usr/lib/oui-httpd/rpc
 	$(CP) $(CURDIR)/files/mptun.lua $(1)/usr/lib/oui-httpd/rpc/mptun
-	$(STAGING_DIR_HOSTPKG)/bin/luac -o $(1)/usr/lib/oui-httpd/rpc/mptun $(1)/usr/lib/oui-httpd/rpc/mptun
+	$(call NGX_LUAC,$(1)/usr/lib/oui-httpd/rpc/mptun,$(1)/usr/lib/oui-httpd/rpc/mptun)
 
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) $(CURDIR)/files/51-aw_upgrade_compat.sh  $(1)/etc/uci-defaults
