@@ -386,15 +386,11 @@ set_ipt_script() {
     local tcptun_is_exist="$5"
     local tcpmark="$6"
     local udpmark="$7"
-    local exitflag
 
     ipset create mproxy_set hash:net 2>/dev/null
     ipset flush  mproxy_set 2>/dev/null
     for ip in `echo $udp_route_ips|sed 's/,/ /g'`;do
         if [ "$ip" = "0.0.0.0/0" ];then
-            #ipset add mproxy_set 0.0.0.0/1
-            #ipset add mproxy_set 128.0.0.0/1
-            exitflag=1
             logger -t mptun "ignore 0.0.0.0/0 route"
         else
             ipset add mproxy_set $ip
@@ -431,7 +427,8 @@ set_ipt_script() {
     $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_skip dst -j RETURN
     $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_set dst -j MARK --set-xmark $udpmark/$udpmark
 
-    if [ -n "exitflag" ];then
+    local use_exit=$(uci -q get mptun.global.use_exit)
+    if [ "$use_exit" = "1" ];then
         local dns_mark=$(uci -q get mptun.global.dns_mark || echo 0x8)
         $IPTW -t mangle -A MPROXY_PREROUTING  -p udp --dport 53 -j MARK --set-xmark $dns_mark/$dns_mark
         $IPTW -t mangle -A MPROXY_PREROUTING  -p tcp --dport 53 -j MARK --set-xmark $dns_mark/$dns_mark
@@ -441,13 +438,10 @@ set_ipt_script() {
     fi
 
     [ -n "$udp_global_proto" ] && {
-    #    $IPTW -t mangle -A MPROXY_PREROUTING -j CONNMARK --restore-mark --nfmask $udpmark --ctmask $udpmark
-    #    $IPTW -t mangle -A MPROXY_PREROUTING -p udp -m mark --mark 0x0/$udpmark -j MARK --set-xmark $udpmark/$udpmark
         $IPTW -t mangle -A MPROXY_PREROUTING -p icmp -m mark --mark 0x0/$udpmark -j MARK --set-xmark $udpmark/$udpmark
-    #    $IPTW -t mangle -A MPROXY_PREROUTING -j CONNMARK --save-mark --nfmask $udpmark --ctmask $udpmark
     }
 
-    [ -n "$exitflag" ] && $IPTW -t mangle -A MPROXY_PREROUTING -j MARK --set-xmark $udpmark/$udpmark
+    [ "$use_exit" = "1" ] && [ -z "$tcptun_is_exist" ] && $IPTW -t mangle -A MPROXY_PREROUTING -j MARK --set-xmark $udpmark/$udpmark
 
     [ -n "$tcptun_is_exist" ] && {
         $IPTW -t mangle -A MPROXY_PREROUTING -p udp  -j TPROXY --on-port 1080 --tproxy-mark $tcpmark/$tcpmark
@@ -509,7 +503,6 @@ set_proxy() {
         nft -f /var/run/mptun.nft
     else
         set_ipt_script "$servers" "$tcp_route_ips" "$udp_route_ips" "$udp_global_proto" "$tcptun_is_exist" "$2" "$3"
-        [ "$type" = "EXIT" ] && iptables -w 5 -t mangle -D MPROXY_PREROUTING -j MARK --set-xmark $3/$3 2>/dev/null
     fi
     /usr/bin/proxy-route.sh "set"
 }
