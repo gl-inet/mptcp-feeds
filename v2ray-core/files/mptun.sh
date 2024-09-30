@@ -334,7 +334,7 @@ set_dns() {
     }
     [ -z "$dns" ] && return
     [ ! "$use_exit" = "1" ] && return
-
+    mkdir -p /tmp/dnsmasq.d.mptun
     [ -f /var/run/dnsmasq/dnsmasq.mptun.pid ] && kill -9 $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
     [ -f /tmp/dnsmasq.d/mpaccess_conf ] && ln -sf /tmp/dnsmasq.d/mpaccess_conf /tmp/dnsmasq.d.mptun/mpaccess_conf
     [ -d /tmp/dnsmasq.d/mpaccess ] && ln -sf /tmp/dnsmasq.d/mpaccess /tmp/dnsmasq.d.mptun/mpaccess
