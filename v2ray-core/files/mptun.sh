@@ -335,14 +335,14 @@ set_dns() {
     [ -z "$dns" ] && return
     [ ! "$use_exit" = "1" ] && return
     mkdir -p /tmp/dnsmasq.d.mptun
-    [ -f /var/run/dnsmasq/dnsmasq.mptun.pid ] && kill -9 $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
+    [ -f /var/run/dnsmasq/dnsmasq.mptun.pid ] && kill $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
     [ -f /tmp/dnsmasq.d/mpaccess_conf ] && ln -sf /tmp/dnsmasq.d/mpaccess_conf /tmp/dnsmasq.d.mptun/mpaccess_conf
     [ -d /tmp/dnsmasq.d/mpaccess ] && ln -sf /tmp/dnsmasq.d/mpaccess /tmp/dnsmasq.d.mptun/mpaccess
     /usr/sbin/dnsmasq -C /etc/dnsmasq.conf.mptun -x /var/run/dnsmasq/dnsmasq.mptun.pid --server=$dns --no-resolv
 }
 
 remove_dns() {
-    kill -9 $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
+    kill $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
     [ -e /var/run/mptun_dns.json ] && rm /var/run/mptun_dns.json
     [ -e /var/run/mptun_dns_policy.json ] && rm /var/run/mptun_dns_policy.json
     rm -rf /tmp/dnsmasq.d.mptun 2>/dev/null
@@ -432,7 +432,7 @@ set_ipt_script() {
         local dns_mark=$(uci -q get mptun.global.dns_mark || echo 0x8)
         $IPTW -t mangle -A MPROXY_PREROUTING  -p udp --dport 53 -j MARK --set-xmark $dns_mark/$dns_mark
         $IPTW -t mangle -A MPROXY_PREROUTING  -p tcp --dport 53 -j MARK --set-xmark $dns_mark/$dns_mark
-	    $IPTW -t mangle -A MPASS -m mark --mark $dns_mark/$dns_mark -j RETURN
+        $IPTW -t mangle -A MPASS -m mark --mark $dns_mark/$dns_mark -j RETURN
         $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst  -j RETURN
         $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst  -j RETURN
     fi
