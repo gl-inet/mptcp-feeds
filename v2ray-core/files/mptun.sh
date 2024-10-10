@@ -234,6 +234,7 @@ set_firewall()
         uci add_list firewall.dns_mptun.proto='udp'
         uci add_list firewall.dns_mptun.proto='tcp'
         uci set firewall.dns_mptun.enabled='1'
+        uci set firewall.dns_mptun.extra='-m set ! --match-set mproxy_mac_skip src'
         uci set firewall.dns_mptun_guest=redirect
         uci set firewall.dns_mptun_guest.name='dns for mptun guest'
         uci set firewall.dns_mptun_guest.src='guest'
@@ -243,6 +244,7 @@ set_firewall()
         uci add_list firewall.dns_mptun_guest.proto='udp'
         uci add_list firewall.dns_mptun_guest.proto='tcp'
         uci set firewall.dns_mptun_guest.enabled='1'
+        uci set firewall.dns_mptun_guest.extra='-m set ! --match-set mproxy_mac_skip src'
      }
 
     [ "$TYPE" = "GATEWAY" -a -n "$listenPort" ] && {
@@ -338,6 +340,7 @@ set_dns() {
     [ -f /var/run/dnsmasq/dnsmasq.mptun.pid ] && kill $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
     [ -f /tmp/dnsmasq.d/mpaccess_conf ] && ln -sf /tmp/dnsmasq.d/mpaccess_conf /tmp/dnsmasq.d.mptun/mpaccess_conf
     [ -d /tmp/dnsmasq.d/mpaccess ] && ln -sf /tmp/dnsmasq.d/mpaccess /tmp/dnsmasq.d.mptun/mpaccess
+    [ -e /tmp/dnsmasq.d.mptun/mptun_policy -a ! -e /tmp/dnsmasq.d/mptun_policy ] && ln -s /tmp/dnsmasq.d.mptun/mptun_policy /tmp/dnsmasq.d/
     /usr/sbin/dnsmasq -C /etc/dnsmasq.conf.mptun -x /var/run/dnsmasq/dnsmasq.mptun.pid --server=$dns --no-resolv
 }
 
@@ -346,6 +349,7 @@ remove_dns() {
     [ -e /var/run/mptun_dns.json ] && rm /var/run/mptun_dns.json
     [ -e /var/run/mptun_dns_policy.json ] && rm /var/run/mptun_dns_policy.json
     rm -rf /tmp/dnsmasq.d.mptun 2>/dev/null
+    [ -e /tmp/dnsmasq.d/mptun_policy ] && rm /tmp/dnsmasq.d/mptun_policy
 }
 
 set_ip_policy(){
@@ -370,12 +374,22 @@ set_domain_policy(){
     done
 }
 
+set_mac_policy(){
+    local list="$(echo $1|sed 's/\",//g;s/\[//g;s/\]//g;s/\"//g;')"
+    local i
+    for i in $list; do
+        local mac="$(echo $i|sed 's/\(..\)/\1:/g; s/:$//')"
+        [ -n "$mac" ] && ipset add mproxy_mac_skip $mac
+    done
+}
 set_policy(){
     local file="/etc/mptun/policy.json"
     local ips="$(jsonfilter -i $file  -e '@.alwaysUseLocalExitIpList'|sed 's/\",//g;s/\[//g;s/\]//g;s/\"//g;')"
     local domains="$(jsonfilter -i $file  -e '@.alwaysUseLocalExitDomainList')"
+    local macs="$(jsonfilter -i $file  -e '@.policyMac')"
     [ -n "$ips" ] && set_ip_policy "$ips"
     [ -n "$domains" ] && set_domain_policy "$domains"
+    [ -n "$macs" ] && set_mac_policy "$macs"
 }
 
 set_ipt_script() {
@@ -411,6 +425,9 @@ set_ipt_script() {
     for ip in `echo $skip_ip|sed 's/,/ /g'`;do
         ipset add mproxy_skip $ip
     done
+
+    ipset create mproxy_mac_skip hash:mac 2>/dev/null
+    ipset flush mproxy_mac_skip 2>/dev/null
  
     local IPTW="iptables -w 5"
     $IPTW -t mangle -N MPROXY_PREROUTING 2>/dev/null
@@ -425,6 +442,7 @@ set_ipt_script() {
     $IPTW -t nat -I POSTROUTING -m mark --mark 0x5 -j RETURN
 
     $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_skip dst -j RETURN
+    $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_mac_skip src -j RETURN
     $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_set dst -j MARK --set-xmark $udpmark/$udpmark
 
     local use_exit=$(uci -q get mptun.global.use_exit)
