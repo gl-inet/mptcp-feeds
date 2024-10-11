@@ -535,7 +535,6 @@ stop_conflict_service() {
     local tor_params='{"module":"tor", "func":"set_config", "params":{"enable":false, "manual": false}}'
     local tailscale_params='{"module":"tailscale", "func":"set_config", "params":{"enabled":false}}'
     local zerotier_params='{"module":"zerotier", "func":"set_config", "params":{"enabled":false}}'
-    local vpn_policy_params='{"module":"vpn-policy", "func":"set_global_policy", "params":{"kill_switch":0,"wan_access":0,"service_policy":1,"vpn_server_policy":1}}'
 
     local wgclient_disabled=$(uci -q get network.wgclient.disabled)
     [ "$wgclient_disabled" = "0" ] && stop_service_by_gl_session "$wgclient_params"
@@ -551,8 +550,6 @@ stop_conflict_service() {
 
     local zerotier_enabled=$(uci -q get zerotier.gl.enabled)
     [ "$zerotier_enabled" = "1" ] && stop_service_by_gl_session "$zerotier_params"
-
-    stop_service_by_gl_session "$vpn_policy_params"
 }
 
 update_devinfo() {
