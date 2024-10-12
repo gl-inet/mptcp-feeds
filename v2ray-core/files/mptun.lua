@@ -155,7 +155,8 @@ function M.get_status()
             self.type = 0
         end
 
-        if conf.peer[i].status == "offline" or conf.peer[i].status == "not_active" then
+        if conf.peer[i].status == "offline" or conf.peer[i].status == "not_active"
+           or conf.peer[i].status == "disable" then
             self.status = 0
         elseif conf.peer[i].status == "online" then
             self.status = 1
