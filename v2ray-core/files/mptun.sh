@@ -433,10 +433,9 @@ set_ipt_script() {
     $IPTW -t mangle -N MPROXY_PREROUTING 2>/dev/null
     $IPTW -t mangle -F MPROXY_PREROUTING 2>/dev/null
     $IPTW -t mangle -C PREROUTING -j MPROXY_PREROUTING
-    [ ! "$?" = "0" ] && {
-        $IPTW -t mangle -I PREROUTING -j MPROXY_PREROUTING
-        $IPTW -t mangle -A MPROXY_PREROUTING -i mptun+ -j RETURN
-    }
+    [ ! "$?" = "0" ] && $IPTW -t mangle -I PREROUTING -j MPROXY_PREROUTING
+
+    $IPTW -t mangle -A MPROXY_PREROUTING ! -i br-+ -j RETURN
 
     $IPTW -t mangle -I FORWARD -i mptun0 -o mptun0 -j MARK --set-xmark 0x5/0x5
     $IPTW -t nat -I POSTROUTING -m mark --mark 0x5 -j RETURN
@@ -556,7 +555,7 @@ update_devinfo() {
     [ -z "$1" -o -n "$(echo $1|grep modem)" ] && return
     local status=$(ubus call network.interface.$1 status 2>/dev/null)
     [ -z "$status" ] && return
-    local netdev=$(echo $status|jsonfilter -e '@.device' 2>/dev/null)
+    local netdev=$(echo $status|jsonfilter -e '@.l3_device' 2>/dev/null)
     local sdev=$(uci get mptun.$1.device)
     [ -z "$netdev" -o "$netdev" = "$sdev" ] && return
     uci set mptun.$1.device=$netdev
