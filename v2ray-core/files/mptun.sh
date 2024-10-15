@@ -348,6 +348,7 @@ remove_dns() {
     kill $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
     [ -e /var/run/mptun_dns.json ] && rm /var/run/mptun_dns.json
     [ -e /var/run/mptun_dns_policy.json ] && rm /var/run/mptun_dns_policy.json
+    [ -e /tmp/dnsmasq.d/mptun_policy ] && rm /tmp/dnsmasq.d/mptun_policy
     rm -rf /tmp/dnsmasq.d.mptun 2>/dev/null
     [ -e /tmp/dnsmasq.d/mptun_policy ] && rm /tmp/dnsmasq.d/mptun_policy
 }
