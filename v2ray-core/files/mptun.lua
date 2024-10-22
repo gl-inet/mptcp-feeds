@@ -13,6 +13,17 @@ local M = {}
 
 local ERR_PARAMETER = 1
 
+
+local function net_topology_is_exist()
+    for i = 1, 15 do
+        if fs.access('/etc/mptun/mpnet_conf') then
+            return true
+        end
+        ngx.sleep(1)
+    end
+    return false
+end
+
 --[[
     @method-type: call
     @method-name: set_config
@@ -123,8 +134,10 @@ function M.get_status()
 
     if cloud_enable ~= "0" then
         ubus.call('gl-cloud', 'notify', {type = 'astrowarp/get_device_net_topology'})
-        if fs.access('/etc/mptun/mpnet_conf') then
+        if net_topology_is_exist() then
             conf = cjson.decode(utils.readfile("/etc/mptun/mpnet_conf") or "{}")
+        else
+            return {}
         end
     end
 
