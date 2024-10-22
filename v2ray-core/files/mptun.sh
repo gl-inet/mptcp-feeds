@@ -539,7 +539,7 @@ stop_conflict_service() {
     local wgclient_disabled=$(uci -q get network.wgclient.disabled)
     [ "$wgclient_disabled" = "0" ] && stop_service_by_gl_session "$wgclient_params"
 
-    local wgclient_disabled=$(uci -q get network.ovpnclient.disabled)
+    local ovpnclient_disabled=$(uci -q get network.ovpnclient.disabled)
     [ "$ovpnclient_disabled" = "0" ] && stop_service_by_gl_session "$ovpnclient_params"
 
     local tor_enable=$(uci -q get tor.global.enable)
