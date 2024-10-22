@@ -123,9 +123,10 @@ end
     @out object nodes.peer Information of the peer(device self)
     @out number nodes.peer.acl_type Type of the access policy(0:none, 1:allow to local 2:allow to subnet)
     @out number nodes.peer.bond Indicates whether the connection is bonding.(0:none 1:aggregation 2:s2s 3:aggregation+s2s)
+    @out bool nodes.peer.connect Whether the node is connected to other nodes
 
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_status"]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"network_name":"test","type":0,"name":"mt6000","nodes":[{"self":{"acl_type":2,"type":1,"name":"test","status":1,"bond":1},"peer":{"acl_type":0,"bond":0}}],"online":true}}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"network_name":"test","type":0,"name":"mt6000","nodes":[{"self":{"acl_type":2,"type":1,"name":"test","status":1,"bond":1},"peer":{"acl_type":0,"bond":0,"connect":true}}],"online":true}}
 ]]
 function M.get_status()
     local c = uci.cursor()
@@ -185,10 +186,13 @@ function M.get_status()
         self.acl_type = 0
         self.bond = 0
         peer.bond = 0
+        peer.connect = true
         if conf.peer[i].connectionType == "aggregation" then
             network_name = conf.peer[i].name
             self.bond = 1
             self.acl_type = 1
+        elseif conf.peer[i].connectionType == "none" then
+            peer.connect = false
         else
             if conf.peer[i].fromAllowAccess and
                conf.peer[i].fromAllowAccess == 1 then
