@@ -135,10 +135,19 @@ function M.get_status()
 
     if cloud_enable ~= "0" then
         ubus.call('gl-cloud', 'notify', {type = 'astrowarp/get_device_net_topology'})
-        if net_topology_is_exist() then
-            conf = cjson.decode(utils.readfile("/etc/mptun/mpnet_conf") or "{}")
+        local aw_enable = c:get('mptun', 'global', 'enable') or "0"
+        if aw_enable == "0" then
+            if fs.access('/etc/mptun/mpnet_conf') then
+                conf = cjson.decode(utils.readfile("/etc/mptun/mpnet_conf") or "{}")
+            else
+                return {}
+            end
         else
-            return {}
+            if net_topology_is_exist() then
+                conf = cjson.decode(utils.readfile("/etc/mptun/mpnet_conf") or "{}")
+            else
+                return {}
+            end
         end
     end
 
