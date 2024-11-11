@@ -339,7 +339,7 @@ set_dns() {
     mkdir -p /tmp/dnsmasq.d.mptun
     [ -f /var/run/dnsmasq/dnsmasq.mptun.pid ] && kill $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
     [ -f /tmp/dnsmasq.d/mpaccess_conf ] && ln -sf /tmp/dnsmasq.d/mpaccess_conf /tmp/dnsmasq.d.mptun/mpaccess_conf
-    [ -d /tmp/dnsmasq.d/mpaccess ] && ln -sf /tmp/dnsmasq.d/mpaccess /tmp/dnsmasq.d.mptun/mpaccess
+    [ ! -e /tmp/dnsmasq.d.mptun/mpaccess -a -d /tmp/dnsmasq.d/mpaccess ] && ln -s /tmp/dnsmasq.d/mpaccess /tmp/dnsmasq.d.mptun/mpaccess
     [ -e /tmp/dnsmasq.d.mptun/mptun_policy -a ! -e /tmp/dnsmasq.d/mptun_policy ] && ln -s /tmp/dnsmasq.d.mptun/mptun_policy /tmp/dnsmasq.d/
     /usr/sbin/dnsmasq -C /etc/dnsmasq.conf.mptun -x /var/run/dnsmasq/dnsmasq.mptun.pid --server=$dns --no-resolv
 }
