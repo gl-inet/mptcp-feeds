@@ -345,7 +345,7 @@ set_dns() {
 }
 
 remove_dns() {
-    kill $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
+    [ -e /var/run/dnsmasq/dnsmasq.mptun.pid ] && kill $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
     [ -e /var/run/mptun_dns.json ] && rm /var/run/mptun_dns.json
     [ -e /var/run/mptun_dns_policy.json ] && rm /var/run/mptun_dns_policy.json
     [ -e /tmp/dnsmasq.d/mptun_policy ] && rm /tmp/dnsmasq.d/mptun_policy
@@ -626,9 +626,21 @@ clean_udptun() {
     ip link del dev "${DEV}" 2>/dev/null
 }
 
+clean_p2p_info(){
+    [ -n "$(ps|grep gl-p2p-daemon|grep -v grep)" ] && kill $(pid_of gl-p2p-daemon) 2>/dev/null
+    ip link del dev mpp2p 2>/dev/null
+    uci -q delete firewall.mpp2p
+    uci -q delete firewall.mpp2p_subnet_rule
+    uci -q delete firewall.mpp2p_local_rule
+    uci -q delete firewall.lan2mpp2p
+    uci commit firewall
+    /etc/init.d/firewall reload 2>/dev/null
+}
+
 mptun_clean() {
     clean_proxy
     clean_udptun
+    clean_p2p_info
     remove_dns
     sync
 }
