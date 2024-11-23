@@ -115,6 +115,9 @@ define Package/v2ray-core/install
 
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) $(CURDIR)/files/51-aw_upgrade_compat.sh  $(1)/etc/uci-defaults
+
+	$(INSTALL_DIR) $(1)/etc/gl_crontabs/crontabs.d/
+	$(INSTALL_BIN) $(CURDIR)/files/aw_arp_scan $(1)/etc/gl_crontabs/crontabs.d/
 endef
 
 define Package/v2ray-example/install

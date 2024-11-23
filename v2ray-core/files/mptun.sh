@@ -644,3 +644,61 @@ mptun_clean() {
     remove_dns
     sync
 }
+
+get_wan_name() {
+    # Get the default route line from the main routing table
+    default_route_line=$(ip route show table main 2>/dev/null | grep "^default")
+    if [ -z "$default_route_line" ]; then
+        echo ""
+        return
+    fi
+    # Extract the interface name from the default route line
+    interface=$(echo "$default_route_line" | sed -n 's/.* dev \([^ ]*\).*/\1/p')
+    echo "$interface"
+}
+
+get_iface_mask() {
+    # Interface name
+    local iface="wan"
+
+    # Call ubus to get the interface status
+    local iface_status
+    iface_status=$(ubus call network.interface.$iface status 2>/dev/null)
+
+    # Check if the interface is up and extract the subnet mask
+    if echo "$iface_status" | grep -q '"up": true'; then
+        # Extract the IPv4 mask using jq or a manual parsing method
+        local mask
+        mask=$(echo "$iface_status" | sed -n 's/.*"mask":\s*\([0-9]*\).*/\1/p' | head -n 1)
+        echo "$mask"
+    else
+        echo ""
+    fi
+}
+
+get_arp_scan_ret(){
+    local aw_enable=$(uci get mptun.global.enable)
+    [ "$aw_enable" = "1" ] || return
+
+    # Get the WAN interface name
+    wan_name=$(get_wan_name)
+
+    # Temporary file path to store the scan results
+    tmp_file="/etc/mp_scan_ip_mac_info"
+
+    # If the interface is not empty, get the subnet mask
+    if [ -n "$wan_name" ]; then
+        subnet_mask=$(get_iface_mask)
+
+        if [ -n "$subnet_mask" ] && [ "$subnet_mask" -ge 22 ]; then
+            gl-arp-scan -i "$wan_name" 2>/dev/null > "$tmp_file"
+        else
+            # Clear the contents of the temporary file
+            cat /dev/null > "$tmp_file"
+        fi
+    else
+        # Clear the contents of the temporary file
+        cat /dev/null > "$tmp_file"
+    fi
+}
+
