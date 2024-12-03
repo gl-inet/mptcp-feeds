@@ -276,55 +276,6 @@ set_firewall()
     /etc/init.d/firewall reload 2>/dev/null
 }
 
-gen_nft_script() {
-    local servers="$1"
-    local tcp_route_ips="$2"
-    local udp_route_ips="$3"
-    local udp_global_proto="$4"
-    local tcptun_is_exist="$5" 
-
-cat > /var/run/mptun.nft << EOF
-#!/usr/sbin/nft -f        
-define SERVER = {$servers}   
-define TCP_PROXY_PORT = 1080          
-${udp_route_ips:+define UDP_ROUTE_IPS = {$udp_route_ips\}}
-define TCP_ROUTE_IPS = {$tcp_route_ips}
-define UDPMARK = "$7"
-define TCPMARK = "$6"                        
-define UDP_GOLBAL_PROTO = {$udp_global_proto}
-
-define BYPASS_IP = {127.0.0.1/32, 224.0.0.0/4, 255.255.255.255/32,169.254.0.0/16,192.0.2.0/24,198.18.0.0/15, \$SERVER}
-define PRIVATEIP = {192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12}
-define TCPPROTO = {tcp}
-
-table inet mproxy {}
-flush table inet mproxy
-table inet mproxy {
-    chain prerouting {
-        type filter hook prerouting priority 0;
-        ip daddr \$BYPASS_IP return
-        #将所有对端子网设置好udp隧道标记，后续路由规则将使用
-        ${udp_route_ips:+ip daddr \$UDP_ROUTE_IPS  mark set \$UDPMARK accept}
-        #如果存在udp聚合peer，则应用这条规则
-        ${udp_global_proto:+meta l4proto \$UDP_GOLBAL_PROTO mark set \$UDPMARK accept}
-        #tcp代理规则,仅代理公网
-        ${tcptun_is_exist:+ip daddr \$PRIVATEIP return}
-        ${tcptun_is_exist:+ip daddr \$TCP_ROUTE_IPS meta l4proto \$TCPPROTO mark set \$TCPMARK tproxy ip to 127.0.0.1:\$TCP_PROXY_PORT accept}
-    }
-}
-
-table inet mpass {}
-flush table inet mpass
-table inet mpass {
-    chain divert {
-        type filter hook prerouting priority -150;
-        #允许tcp代理数据通过防火墙
-        meta l4proto tcp socket transparent 1 meta mark set \$TCPMARK accept
-    }
-}
-EOF
-}
-
 set_dns() {
     local dns=$(uci -q get mptun.global.dns)
     local use_exit=$(uci -q get mptun.global.use_exit)
@@ -391,6 +342,120 @@ set_policy(){
     [ -n "$ips" ] && set_ip_policy "$ips"
     [ -n "$domains" ] && set_domain_policy "$domains"
     [ -n "$macs" ] && set_mac_policy "$macs"
+}
+
+gen_nft_script() {
+    local server="$1"
+    local tcp_route_ips="$2"
+    local udp_route_ips="$3"
+    local udp_global_proto="$4"
+    local tcptun_is_exist="$5"
+    local exit_is_dev=""
+
+    #exit node
+    local use_exit="$(uci -q get mptun.global.use_exit)"
+    [ "$use_exit" = "1" -a -z "$tcptun_is_exist" ] && exit_is_dev=1
+    [ -n "$use_exit" -a "$use_exit" = "0" ] && use_exit=""
+
+    local item mproxy_set=""
+    for item in $(echo $udp_route_ips|sed 's/,/ /g'); do
+        if [ "$item" = "0.0.0.0/0" -o "$item" = "::/0" ];then
+            logger -t mptun "ignore 0.0.0.0/0 route"
+        else
+            if [ -z "$mproxy_set" ]; then
+                mproxy_set="$item"
+            else
+                mproxy_set="$mproxy_set"",$item"
+            fi
+        fi
+    done
+
+    local dns_mark=$(uci -q get mptun.global.dns_mark || echo 0x8)
+    local skip_addr='127.0.0.1/32, 224.0.0.0/4, 255.255.255.255/32, 169.254.0.0/16, 192.0.2.0/24, 198.18.0.0/15'
+
+    local policy_ips policy_file=/etc/mptun/policy.json
+    [ -f "$policy_file" ] && {
+        policy_ips="$(jsonfilter -q -i $policy_file -e '@.alwaysUseLocalExitIpList'|sed 's/ //g;s/\[//g;s/\]//g')"
+        for item in "$policy_ips"; do
+            skip_addr="$skip_addr"",$item"
+        done
+    }
+
+    local domains="$(jsonfilter -i $policy_file  -e '@.alwaysUseLocalExitDomainList')"
+    [ -n "$domains" ] && set_domain_policy "$domains"
+
+    local macs="$(jsonfilter -q -i $file  -e '@.policyMac'|sed 's/\",//g;s/\[//g;s/\]//g;s/\"//g;')"
+    local skip_mac
+    for item in "$macs"; do
+        if [ -z "$skip_mac" ]; then
+            skip_mac="$item"
+        else
+            skip_mac="$skip_mac"",$item"
+        fi
+    done
+
+cat > /var/run/mptun.nft <<EOF
+
+#!/usr/sbin/nft -f
+define SERVER = {$server}
+define TCP_PROXY_PORT = 1080
+define TCP_ROUTE_IPS = {$tcp_route_ips}
+define TCPMARK = "$6"
+define UDPMARK = "$7"
+define skip_addr = {$skip_addr}
+define DNS_MARK = "$dns_mark"
+define MPPROTO = {tcp, udp}
+
+table ip mpnet {}
+delete table ip mpnet
+
+table ip mpnet {
+    set mproxy_privateip {
+        type ipv4_addr; flags interval; elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }
+    }
+
+    set mproxy_set {
+        type ipv4_addr; flags interval; elements = {$mproxy_set}
+    }
+
+    set mproxy_skip {
+        type ipv4_addr; flags interval; elements = {$skip_addr}
+    }
+
+    set mproxy_mac_skip {
+        type ether_addr; flags interval;
+    }
+
+    chain MPROXY_PREROUTING {
+        type filter hook prerouting priority mangle; policy accept;
+        iifname != "br-*" accept
+        ip daddr @mproxy_skip accept
+        ether saddr @mproxy_mac_skip accept
+        ip daddr @mproxy_set mark set \$UDPMARK
+        #出口节点
+        ${use_exit:+udp dport 53 counter packets 0 bytes 0 mark set \$DNS_MARK}
+        ${use_exit:+tcp dport 53 counter packets 0 bytes 0 mark set \$DNS_MARK}
+        ${use_exit:+ip daddr @mproxy_privateip accept}
+
+        #如果存在udp聚合peer,则应用这条规则
+        ${udp_global_proto:+ip protocol icmp mark 0x0 counter packets 0 bytes 0 mark set \$UDPMARK nftrace set 1}
+        ${exit_is_dev:+mark set \$UDPMARK counter packets 0 bytes 0 nftrace set 1}
+        ${tcptun_is_exist:+ip daddr \$TCP_ROUTE_IPS meta l4proto \$MPPROTO mark set \$TCPMARK tproxy ip to 127.0.0.1:\$TCP_PROXY_PORT counter packets 0 bytes 0 nftrace set 1 accept}
+    }
+
+    chain FORWARD {
+        type filter hook forward priority mangle; policy accept;
+        iifname "mptun0" oifname "mptun0" mark set 0x5 counter packets 0 bytes 0 nftrace set 1
+    }
+
+    chain POSTROUTING {
+        type filter hook postrouting priority srcnat; policy accept;
+        mark 0x5 counter packets 0 bytes 0 nftrace set 1 return
+    }
+}
+
+EOF
+
 }
 
 set_ipt_script() {
@@ -518,6 +583,7 @@ set_proxy() {
  
     if [ -e "/usr/sbin/nft" ];then
         gen_nft_script "$servers" "$tcp_route_ips" "$udp_route_ips" "$udp_global_proto" "$tcptun_is_exist" "$2" "$3"
+        set_dns
         nft -f /var/run/mptun.nft
     else
         set_ipt_script "$servers" "$tcp_route_ips" "$udp_route_ips" "$udp_global_proto" "$tcptun_is_exist" "$2" "$3"
