@@ -322,7 +322,11 @@ set_domain_policy(){
     echo "#Automatically generated, do not edit" >$file
     for i in $list;do
        echo "server=/$i/127.0.0.1#53" >>$file
-       echo "ipset=/$i/mproxy_skip" >>$file
+       if [ -e "/usr/sbin/nft" ];then
+           echo "nftset=/$i/#ip#mpnet#mproxy_skip" >>$file
+       else
+           echo "ipset=/$i/mproxy_skip" >>$file
+       fi
     done
 }
 
@@ -380,9 +384,6 @@ gen_nft_script() {
             skip_addr="$skip_addr"",$item"
         done
     }
-
-    local domains="$(jsonfilter -i $policy_file  -e '@.alwaysUseLocalExitDomainList')"
-    [ -n "$domains" ] && set_domain_policy "$domains"
 
     local macs="$(jsonfilter -q -i $file  -e '@.policyMac'|sed 's/\",//g;s/\[//g;s/\]//g;s/\"//g;')"
     local skip_mac
@@ -455,6 +456,9 @@ table ip mpnet {
 }
 
 EOF
+
+    local domains="$(jsonfilter -i $policy_file  -e '@.alwaysUseLocalExitDomainList')"
+    [ -n "$domains" ] && set_domain_policy "$domains"
 
 }
 
