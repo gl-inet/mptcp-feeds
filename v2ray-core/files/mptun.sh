@@ -291,7 +291,9 @@ set_dns() {
     [ -f /var/run/dnsmasq/dnsmasq.mptun.pid ] && kill $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
     [ -f /tmp/dnsmasq.d/mpaccess_conf ] && ln -sf /tmp/dnsmasq.d/mpaccess_conf /tmp/dnsmasq.d.mptun/mpaccess_conf
     [ ! -e /tmp/dnsmasq.d.mptun/mpaccess -a -d /tmp/dnsmasq.d/mpaccess ] && ln -s /tmp/dnsmasq.d/mpaccess /tmp/dnsmasq.d.mptun/mpaccess
-    [ -e /tmp/dnsmasq.d.mptun/mptun_policy -a ! -e /tmp/dnsmasq.d/mptun_policy ] && ln -s /tmp/dnsmasq.d.mptun/mptun_policy /tmp/dnsmasq.d/
+    if [ ! -e "/usr/sbin/nft" ]; then
+        [ -e /tmp/dnsmasq.d.mptun/mptun_policy -a ! -e /tmp/dnsmasq.d/mptun_policy ] && ln -s /tmp/dnsmasq.d.mptun/mptun_policy /tmp/dnsmasq.d/
+    fi
     /usr/sbin/dnsmasq -C /etc/dnsmasq.conf.mptun -x /var/run/dnsmasq/dnsmasq.mptun.pid --server=$dns --no-resolv
 }
 
@@ -654,8 +656,7 @@ clean_proxy() {
     #rm  /etc/nftables.d/mptcp-proxy.nft 2>/dev/null
     /usr/bin/proxy-route.sh "clean" 2>/dev/null
     if [ -e "/usr/sbin/nft" ];then
-        nft delete table inet mpass 2>/dev/null
-        nft delete table inet mproxy 2>/dev/null
+        nft delete table ip mpnet 2>/dev/null
     else
         local IPTW="iptables -w 5"
         $IPTW -t mangle -D PREROUTING -j MPROXY_PREROUTING 2>/dev/null
