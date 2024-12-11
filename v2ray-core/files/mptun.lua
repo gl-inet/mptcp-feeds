@@ -15,7 +15,7 @@ local ERR_PARAMETER = 1
 
 
 local function net_topology_is_exist()
-    for i = 1, 15 do
+    for _ = 1, 15 do
         if fs.access('/etc/mptun/mpnet_conf') then
             return true
         end
@@ -110,7 +110,7 @@ end
     @method-desc: get mptun network status
 
     @out string name Name of the device in the network
-    @out bool   online Whether the device is in an aggregated network
+    @out number status Whether the device is in an aggregated network (0:offline 1:online 2:disable)
     @out string network_name The network name field obtained from the cloud platform
     @out number type Native information(0: edge 1:cloud gateway 2: local gateway)
     @out array ?nodes Information about connections to other nodes, If the object does not exist, means the current device does not belong to any network
@@ -126,7 +126,7 @@ end
     @out bool nodes.peer.connect Whether the node is connected to other nodes
 
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_status"]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"network_name":"test","type":0,"name":"mt6000","nodes":[{"self":{"acl_type":2,"type":1,"name":"test","status":1,"bond":1},"peer":{"acl_type":0,"bond":0,"connect":true}}],"online":true}}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"network_name":"test","type":0,"name":"mt6000","nodes":[{"self":{"acl_type":2,"type":1,"name":"test","status":1,"bond":1},"peer":{"acl_type":0,"bond":0,"connect":true}}],"status":1}}
 ]]
 function M.get_status()
     local c = uci.cursor()
@@ -151,16 +151,21 @@ function M.get_status()
         end
     end
 
-    local online = true
+    local status = 1
     local loop_cnt = 0
 
     if not conf.peer or #conf.peer == 0 then
-        online = false
+        status = 0
     else
         loop_cnt = #conf.peer
     end
 
-    local i
+    if conf.dev_status == "offline" then
+        status = 0
+    elseif conf.dev_status == "disable" then
+        status = 2
+    end
+
     local nodes = {}
     local network_name
     local network_status = conf.networkStatus or "disable"
@@ -170,25 +175,26 @@ function M.get_status()
         local peer = {}
         self.name = conf.peer[i].name
 
+        self.status = 0
         if conf.peer[i].nodeType == "CLOUD_GATEWAY" then
             self.type = 1
+            -- cloud gateway status should be 'enable/disable',
+            -- but the old version users 'online'
+            if conf.peer[i].status == "enable" or conf.peer[i].status == "online" then
+                self.status = network_status ~= "disable" and 1 or 0
+            end
         elseif conf.peer[i].edgeType and conf.peer[i].edgeType == "LOCAL_GATEWAY" then
             self.type = 2
+            if conf.peer[i].status == "online" then
+                self.status = 1
+            end
         else
             self.type = 0
-        end
-
-        if conf.peer[i].status == "offline" or conf.peer[i].status == "not_active"
-           or conf.peer[i].status == "disable" then
-            self.status = 0
-        elseif conf.peer[i].status == "online" then
-            self.status = 1
-        else
-            self.status = 2
-        end
-
-        if self.type == 1 and network_status == "disable" then
-            self.status = 0
+            if conf.peer[i].status == "online" then
+                self.status = 1
+            elseif conf.peer[i].status == "disable" then
+                self.status = 2
+            end
         end
 
         peer.acl_type = 0
@@ -239,7 +245,7 @@ function M.get_status()
         network_name = conf.networkName or network_name,
         name = conf.name,
         type = conf.type == 0 and 0 or 2,
-        online = online,
+        status = status,
         nodes = nodes
     }
 end
