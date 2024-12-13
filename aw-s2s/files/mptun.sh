@@ -504,8 +504,8 @@ set_ipt_script() {
     local IPTW="iptables -w 5"
     $IPTW -t mangle -N MPROXY_PREROUTING 2>/dev/null
     $IPTW -t mangle -F MPROXY_PREROUTING 2>/dev/null
-    $IPTW -t mangle -C PREROUTING -j MPROXY_PREROUTING
-    [ ! "$?" = "0" ] && $IPTW -t mangle -I PREROUTING -j MPROXY_PREROUTING
+    $IPTW -t mangle -C PREROUTING -j MPROXY_PREROUTING 2>/dev/null
+    [ ! "$?" = "0" ] && $IPTW -t mangle -I PREROUTING -j MPROXY_PREROUTING 2>/dev/null
 
     $IPTW -t mangle -A MPROXY_PREROUTING ! -i br-+ -j RETURN
 

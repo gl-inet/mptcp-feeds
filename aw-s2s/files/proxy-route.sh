@@ -1,7 +1,7 @@
 #!/bin/ash
 # 设置策略路由
 set_route() {
-    ip rule del pref 10
+    ip rule del pref 10 2>/dev/null
     ip rule add fwmark 1 table 10 pref 10
     ip route add local 0.0.0.0/0 dev lo table 10
     #local address use main route table
