@@ -3,7 +3,6 @@ dhcp-authoritative
 domain-needed
 localise-queries
 read-ethers
-enable-ubus
 expand-hosts
 bind-dynamic
 local-service
