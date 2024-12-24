@@ -607,6 +607,7 @@ stop_conflict_service() {
     local tor_params='{"module":"tor", "func":"set_config", "params":{"enable":false, "manual": false}}'
     local tailscale_params='{"module":"tailscale", "func":"set_config", "params":{"enabled":false}}'
     local zerotier_params='{"module":"zerotier", "func":"set_config", "params":{"enabled":false}}'
+    local netnat_params='{"module":"network", "func":"set_netnat_config", "params":{"enable":false}}'
 
     local wgclient_disabled=$(uci -q get network.wgclient.disabled)
     [ "$wgclient_disabled" = "0" ] && stop_service_by_gl_session "$wgclient_params"
@@ -622,6 +623,11 @@ stop_conflict_service() {
 
     local zerotier_enabled=$(uci -q get zerotier.gl.enabled)
     [ "$zerotier_enabled" = "1" ] && stop_service_by_gl_session "$zerotier_params"
+
+    [ -e /etc/config/ecm ] && {
+        local netnat_enabled=$(uci -q get ecm.global.enabled)
+        [ "$netnat_enabled" = "1" ] && stop_service_by_gl_session "$netnat_params"
+    }
 }
 
 update_devinfo() {
