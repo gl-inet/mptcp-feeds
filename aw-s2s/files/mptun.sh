@@ -376,6 +376,9 @@ gen_nft_script() {
         fi
     done
 
+    #Prevent mproxy_set from being empty and causing nft script exception
+    [ -z "$mproxy_set" ] && mproxy_set='224.0.0.1'
+
     local dns_mark=$(uci -q get mptun.global.dns_mark || echo 0x8)
     local skip_addr='127.0.0.1/32, 224.0.0.0/4, 255.255.255.255/32, 169.254.0.0/16, 192.0.2.0/24, 198.18.0.0/15'
 
