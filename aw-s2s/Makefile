@@ -4,15 +4,7 @@ include ./version.mk
 PKG_NAME:=aw-s2s
 PKG_VERSION:=$(strip $(call findrev))
 PKG_RELEASE:=1
-PKG_BUILD_DEPENDS:=lua/host luajit2/host
-
-define NGX_LUAC
-if [ "$(CONFIG_NGINX_USE_LUAJIT)" == "y" ];then \
-	$(STAGING_DIR_HOSTPKG)/bin/luajit_host.sh $(1) $(2); \
-else \
-	$(STAGING_DIR_HOSTPKG)/bin/luac -o $(1) $(2); \
-fi
-endef
+PKG_BUILD_DEPENDS:=lua/host
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -44,7 +36,7 @@ define Package/$(PKG_NAME)/install
 
 	$(INSTALL_DIR) $(1)/usr/lib/oui-httpd/rpc
 	$(CP) $(CURDIR)/files/mptun.lua $(1)/usr/lib/oui-httpd/rpc/mptun
-	$(call NGX_LUAC,$(1)/usr/lib/oui-httpd/rpc/mptun,$(1)/usr/lib/oui-httpd/rpc/mptun)
+	$(STAGING_DIR_HOSTPKG)/bin/luac -o $(1)/usr/lib/oui-httpd/rpc/mptun $(1)/usr/lib/oui-httpd/rpc/mptun
 
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) $(CURDIR)/files/51-aw_upgrade_compat.sh  $(1)/etc/uci-defaults

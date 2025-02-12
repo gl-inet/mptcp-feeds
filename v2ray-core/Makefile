@@ -27,16 +27,6 @@ GO_PKG_LDFLAGS_X:= \
 	$(GO_PKG).build=OpenWrt \
 	$(GO_PKG).version=$(PKG_VERSION)
 
-PKG_BUILD_DEPENDS:=lua/host luajit2/host
-
-define NGX_LUAC
-if [ "$(CONFIG_NGINX_USE_LUAJIT)" == "y" ];then \
-	$(STAGING_DIR_HOSTPKG)/bin/luajit_host.sh $(1) $(2); \
-else \
-	$(STAGING_DIR_HOSTPKG)/bin/luac -o $(1) $(2); \
-fi
-endef
-
 include $(INCLUDE_DIR)/package.mk
 include ../lang/golang/golang-package.mk
 
