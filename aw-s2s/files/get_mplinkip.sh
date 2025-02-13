@@ -95,7 +95,7 @@ get_link_info()
             [ "$up6" = "true" ] && ip6="$(echo $ubus6_data|jsonfilter -e '@["ipv6-address"][0]["address"]')"
         }
 
-        pub_ip=$(curl --connect-timeout 2 --max-time 4 --interface $online_dev -s ip.sb -4)
+        pub_ip=$(curl --connect-timeout 2 --max-time 4 --interface $online_dev -s tool.gl-inet.com/ip)
         pub_ip6=$(curl --connect-timeout 2 --max-time 4 --interface $online_dev -s ip.sb -6)
 
         if [ -z "$flag" ]; then
