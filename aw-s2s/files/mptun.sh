@@ -512,7 +512,13 @@ set_ipt_script() {
 
     $IPTW -t mangle -A MPROXY_PREROUTING ! -i br-+ -j RETURN
 
+    $IPTW -t mangle -D FORWARD -i mptun0 -o mptun0 -j MARK --set-xmark 0x5/0x5 2>/dev/null
     $IPTW -t mangle -I FORWARD -i mptun0 -o mptun0 -j MARK --set-xmark 0x5/0x5
+
+    $IPTW -t mangle -D FORWARD -i mptun0 -o br-lan -m comment --comment SDWAN_IP_MAPPING_MARK -j MARK --set-xmark 0x4/0x4 2>/dev/null
+    $IPTW -t mangle -I FORWARD -i mptun0 -o br-lan -m comment --comment SDWAN_IP_MAPPING_MARK -j MARK --set-xmark 0x4/0x4
+
+    $IPTW -t nat -D POSTROUTING -m mark --mark 0x5 -j RETURN 2>/dev/null
     $IPTW -t nat -I POSTROUTING -m mark --mark 0x5 -j RETURN
 
     $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_skip dst -j RETURN
@@ -679,6 +685,7 @@ clean_proxy() {
         $IPTW -t mangle -F MPASS 2>/dev/null
         $IPTW -t mangle -X MPROXY_PREROUTING 2>/dev/null
         $IPTW -t mangle -X MPASS 2>/dev/null
+        $IPTW -t mangle -D FORWARD -i mptun0 -o br-lan -m comment --comment SDWAN_IP_MAPPING_MARK -j MARK --set-xmark 0x4/0x4 2>/dev/null
         $IPTW -t mangle -D FORWARD -i mptun0 -o mptun0 -j MARK --set-xmark 0x5/0x5 2>/dev/null
         $IPTW -t nat -D POSTROUTING -m mark --mark 0x5 -j RETURN 2>/dev/null
     fi
