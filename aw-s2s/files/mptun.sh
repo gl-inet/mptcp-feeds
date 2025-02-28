@@ -198,6 +198,14 @@ set_firewall()
     uci -q delete firewall.mptun_local_rule.proto
     uci add_list firewall.mptun_local_rule.proto='all'
 
+    uci set firewall.mptun_forward_rule=rule
+    uci set firewall.mptun_forward_rule.name='mptun forward rule'
+    uci set firewall.mptun_forward_rule.src="mptun"
+    uci set firewall.mptun_forward_rule.dest="*"
+    uci -q delete firewall.mptun_forward_rule.proto
+    uci add_list firewall.mptun_forward_rule.proto="all"
+    uci set firewall.mptun_forward_rule.target="ACCEPT"
+
     uci -q delete firewall.mptun_subnet_rule.src_ip
     for i in $srcips;do
         uci add_list firewall.mptun_subnet_rule.src_ip="$i"
@@ -699,6 +707,7 @@ clean_udptun() {
         uci -q del firewall.lan2mptun
         uci -q del firewall.mptun_subnet_rule
         uci -q del firewall.mptun_local_rule
+        uci -q del firewall.mptun_forward_rule
         uci -q del firewall.mptun_allow_listen
         uci -q del firewall.mptun2mptun
         uci -q del firewall.mptun2wan
@@ -720,14 +729,7 @@ clean_udptun() {
 }
 
 clean_p2p_info(){
-    [ -n "$(ps|grep gl-p2p-daemon|grep -v grep)" ] && kill $(pid_of gl-p2p-daemon) 2>/dev/null
-    ip link del dev mpp2p 2>/dev/null
-    uci -q delete firewall.mpp2p
-    uci -q delete firewall.mpp2p_subnet_rule
-    uci -q delete firewall.mpp2p_local_rule
-    uci -q delete firewall.lan2mpp2p
-    uci commit firewall
-    /etc/init.d/firewall reload 2>/dev/null
+    [ -n "$(ps|grep gl-p2p-daemon|grep -v grep)" ] && kill $(pgrep gl-p2p-daemon) 2>/dev/null
 }
 
 mptun_clean() {
