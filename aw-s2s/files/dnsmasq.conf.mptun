@@ -17,7 +17,6 @@ dhcp-script=/usr/lib/dnsmasq/dhcp-script.sh
 script-arp
 dhcp-broadcast=tag:needs-broadcast
 user=root
-group=explict_vpn
 dhcp-ignore-names=tag:dhcp_bogus_hostname
 conf-file=/usr/share/dnsmasq/dhcpbogushostname.conf
 bogus-priv
