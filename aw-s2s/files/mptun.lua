@@ -273,5 +273,43 @@ function M.get_traffic()
     end
 end
 
+local function wait_token_update()
+    for _ = 1, 15 do
+        if fs.access('/etc/mptun/mp_token') then
+            local data = cjson.decode(utils.readfile('/etc/mptun/mp_token') or "{}")
+            if data.awDeviceToken then
+                return data.awDeviceToken
+            end
+        end
+        ngx.sleep(1)
+    end
+end
+
+--[[
+    @method-type: call
+    @method-name: get_token
+    @method-desc: get astrowarp http token
+
+    @out string token  http token.
+
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_token"]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"token":"0ff048cecf3c49b6806b1432e64c8c8a"}}
+--]]
+function M.get_token()
+    local msg = {
+        data = {},
+        type = 'astrowarp/get_aw_device_token'
+    }
+    os.remove('/etc/mptun/mp_token')
+    ubus.call('gl-cloud', 'notify', msg)
+    local res = wait_token_update() or ''
+
+    if res == '' then
+        return {err_code = -2, err_msg = 'Failed to obtain.'}
+    end
+
+    return {token = res}
+end
+
 return M
 
