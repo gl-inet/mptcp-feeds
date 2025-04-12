@@ -137,7 +137,7 @@ set_udptun() {
 
     [ -z "$(uci -q get network.mpudptun_rule)" ] && {
         uci set network.mpudptun_rule=rule
-        uci set network.mpudptun_rule.mark="$MARK"
+        uci set network.mpudptun_rule.mark="$MARK/$MARK"
         uci set network.mpudptun_rule.lookup='30'
         uci set network.mpudptun_rule.priority='30'
         uci commit network
