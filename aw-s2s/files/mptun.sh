@@ -740,7 +740,7 @@ mptun_clean() {
 
 get_wan_name() {
     # Get the default route line from the main routing table
-    default_route_line=$(ip route show table main 2>/dev/null | grep "^default")
+    default_route_line=$(ip route show table main 2>/dev/null | grep "^default" | grep -v "dead" | head -1)
     if [ -z "$default_route_line" ]; then
         echo ""
         return
