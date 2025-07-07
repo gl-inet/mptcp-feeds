@@ -185,13 +185,6 @@ set_firewall()
     uci set firewall.lan2mptun.src='lan'
     uci set firewall.lan2mptun.dest='mptun'
 
-    uci set firewall.mptun_subnet_rule=rule
-    uci set firewall.mptun_subnet_rule.name='mptun subnet rule'
-    uci set firewall.mptun_subnet_rule.src="mptun"
-    uci set firewall.mptun_subnet_rule.dest='*'
-    uci -q delete firewall.mptun_subnet_rule.proto
-    uci add_list firewall.mptun_subnet_rule.proto='all'
-
     uci set firewall.mptun_local_rule=rule
     uci set firewall.mptun_local_rule.name='mptun local rule'
     uci set firewall.mptun_local_rule.src="mptun"
@@ -206,20 +199,31 @@ set_firewall()
     uci add_list firewall.mptun_forward_rule.proto="all"
     uci set firewall.mptun_forward_rule.target="ACCEPT"
 
-    uci -q delete firewall.mptun_subnet_rule.src_ip
-    for i in $srcips;do
-        uci add_list firewall.mptun_subnet_rule.src_ip="$i"
-    done
-    #uci -q delete firewall.mptun_subnet_rule.dest_ip
-    uci -q delete firewall.mptun_subnet_rule.extra
-    for i in $destips;do
-        uci set firewall.mptun_subnet_rule.extra='-i mptun+ -m conntrack --ctstate DNAT'
-        #uci add_list firewall.mptun_subnet_rule.dest_ip="$i"
-    done
-    if [ -z "$srcips" -o -z "$destips" ];then
-        uci set firewall.mptun_subnet_rule.target='DROP'
+    local rule_target="accept"
+    if [ -e "/usr/sbin/nft" ]; then
+        [ -z "$srcips" -o -z "$destips" ] && rule_target="drop"
     else
-        uci set firewall.mptun_subnet_rule.target='ACCEPT'
+        uci set firewall.mptun_subnet_rule=rule
+        uci set firewall.mptun_subnet_rule.name='mptun subnet rule'
+        uci set firewall.mptun_subnet_rule.src="mptun"
+        uci set firewall.mptun_subnet_rule.dest='*'
+        uci -q delete firewall.mptun_subnet_rule.proto
+        uci add_list firewall.mptun_subnet_rule.proto='all'
+        uci -q delete firewall.mptun_subnet_rule.src_ip
+        for i in $srcips;do
+            uci add_list firewall.mptun_subnet_rule.src_ip="$i"
+        done
+        #uci -q delete firewall.mptun_subnet_rule.dest_ip
+        uci -q delete firewall.mptun_subnet_rule.extra
+        for i in $destips;do
+            uci set firewall.mptun_subnet_rule.extra='-i mptun+ -m conntrack --ctstate DNAT'
+            #uci add_list firewall.mptun_subnet_rule.dest_ip="$i"
+        done
+        if [ -z "$srcips" -o -z "$destips" ];then
+            uci set firewall.mptun_subnet_rule.target='DROP'
+        else
+            uci set firewall.mptun_subnet_rule.target='ACCEPT'
+        fi
     fi
 
     uci -q delete firewall.mptun_local_rule.src_ip
@@ -282,6 +286,7 @@ set_firewall()
     }
     uci commit firewall
     /etc/init.d/firewall reload 2>/dev/null
+    [ -e "/usr/sbin/nft" ] && nft insert rule inet fw4 forward_mptun iifname "mptun0" ct status dnat counter $rule_target
 }
 
 set_dns() {
