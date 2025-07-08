@@ -624,19 +624,10 @@ stop_service_by_gl_session() {
 }
 
 stop_conflict_service() {
-    local wgclient_params='{"module":"wg-client", "func":"stop", "params":{}}'
-    local ovpnclient_params='{"module":"ovpn-client", "func":"stop", "params":{}}'
     local tor_params='{"module":"tor", "func":"set_config", "params":{"enable":false, "manual": false}}'
     local tailscale_params='{"module":"tailscale", "func":"set_config", "params":{"enabled":false}}'
     local zerotier_params='{"module":"zerotier", "func":"set_config", "params":{"enabled":false}}'
     local netnat_params='{"module":"network", "func":"set_netnat_config", "params":{"enable":false}}'
-    local button_params='{"module":"switch-button", "func":"set_config", "params":{"func":"none", "sync":false}}'
-
-    local wgclient_disabled=$(uci -q get network.wgclient.disabled)
-    [ "$wgclient_disabled" = "0" ] && stop_service_by_gl_session "$wgclient_params"
-
-    local ovpnclient_disabled=$(uci -q get network.ovpnclient.disabled)
-    [ "$ovpnclient_disabled" = "0" ] && stop_service_by_gl_session "$ovpnclient_params"
 
     local tor_enable=$(uci -q get tor.global.enable)
     [ "$tor_enable" = "1" ] && stop_service_by_gl_session "$tor_params"
@@ -652,10 +643,6 @@ stop_conflict_service() {
         [ "$netnat_enabled" = "1" ] && stop_service_by_gl_session "$netnat_params"
     }
 
-    [ -e /etc/config/switch-button ] && {
-        local button_enable=$(uci -q get switch-button.@main[0].func)
-        [ "$button_enable" = "none" ] || stop_service_by_gl_session "$button_params"
-    }
 }
 
 update_devinfo() {
