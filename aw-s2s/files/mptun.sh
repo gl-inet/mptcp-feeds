@@ -643,6 +643,14 @@ stop_conflict_service() {
         [ "$netnat_enabled" = "1" ] && stop_service_by_gl_session "$netnat_params"
     }
 
+    local config=$(uci -q get network.ovpnclient.config)
+    [ -n "$config" ] && {
+        local group_id=$(uci get ovpnclient.$config.group_id)
+        local client_id=$(uci get ovpnclient.$config.client_id)
+        local tap_s2s_params='{"module": "vpn-client", "func":"set_tap_s2s", "params":{"client_id": '$client_id', "group_id": '$group_id', "enabled": false}}'
+        [ -n "$group_id" -a -n "$client_id" ] && stop_service_by_gl_session "$tap_s2s_params"
+    }
+
 }
 
 update_devinfo() {
