@@ -2,7 +2,7 @@
 # 设置策略路由
 set_route() {
     ip rule del pref 10 2>/dev/null
-    ip rule add fwmark 1 table 10 pref 10
+    ip rule add fwmark 0x1/0x1 table 10 pref 10
     ip route add local 0.0.0.0/0 dev lo table 10
     #local address use main route table
     ip rule add from all lookup main suppress_prefixlength 1 pref 9
