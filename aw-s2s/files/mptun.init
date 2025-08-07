@@ -7,6 +7,7 @@ CONF="mptun"
 PROG="/usr/bin/mptun"
 
 . /lib/functions/mptun.sh
+. /lib/functions/gl_util.sh
 
 update_modem_cfg()
 {
@@ -49,6 +50,14 @@ update_conf() {
 }
 
 start_service() {
+    [ "$(get_country_code)" = "CN" ] && {
+        uci set mptun.global.enable=0
+        uci set mptun.global.use_exit=0
+        uci commit mptun
+        sync
+        return 0
+    }
+
     config_load "$CONF"
 
     local enabled dev udpmark tcpmark use_exit dns

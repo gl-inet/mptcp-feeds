@@ -4,7 +4,7 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=v2ray-core
+PKG_NAME:=mptun-core
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/luochongjun/mptcptun.git
@@ -30,55 +30,20 @@ GO_PKG_LDFLAGS_X:= \
 include $(INCLUDE_DIR)/package.mk
 include ../lang/golang/golang-package.mk
 
-define Package/v2ray/template
+define Package/mptun/template
   TITLE:=A platform for building proxies to bypass network restrictions
   SECTION:=net
   CATEGORY:=Network
-  URL:=https://www.v2fly.org
 endef
 
-define Package/v2ray-core
-  $(call Package/v2ray/template)
+define Package/$(PKG_NAME)
+  $(call Package/mptun/template)
   DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle +kmod-ipt-tproxy  +bind-dig
 endef
 
-define Package/v2ray-example
-  $(call Package/v2ray/template)
-  TITLE+= (example configs)
-  DEPENDS:=v2ray-core
-  PKGARCH:=all
-endef
-
-define Package/v2ray-extra
-  $(call Package/v2ray/template)
-  TITLE+= (extra resources)
-  DEPENDS:=v2ray-core
-  PKGARCH:=all
-endef
-
-define Package/v2ray/description
-  Project V is a set of network tools that help you to build your own computer network.
-  It secures your network connections and thus protects your privacy.
-endef
-
-define Package/v2ray-core/description
-  $(call Package/v2ray/description)
-endef
-
-define Package/v2ray-example/description
-  $(call Package/v2ray/description)
-
-  This includes example configuration files for v2ray-core.
-endef
-
-define Package/v2ray-extra/description
-  $(call Package/v2ray/description)
-
-  This includes extra resources for v2ray-core.
-endef
-
-define Package/v2ray-core/install
+define Package/$(PKG_NAME)/install
 	$(call GoPackage/Package/Install/Bin,$(PKG_INSTALL_DIR))
+
 	$(INSTALL_DIR) $(1)/usr/bin/
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/main $(1)/usr/bin/mptun
 
@@ -87,17 +52,4 @@ define Package/v2ray-core/install
 	$(INSTALL_DATA) $(CURDIR)/files/basic.json $(1)/etc/mptun/
 endef
 
-define Package/v2ray-example/install
-	$(INSTALL_DIR) $(1)/etc/mptun/
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/vpoint_socks_vmess.json $(1)/etc/mptun/
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/vpoint_vmess_freedom.json $(1)/etc/mptun/
-endef
-
-define Package/v2ray-extra/install
-	$(INSTALL_DIR) $(1)/usr/share/mptun/
-	$(CP) $(PKG_BUILD_DIR)/release/extra/* $(1)/usr/share/mptun/
-endef
-
-$(eval $(call BuildPackage,v2ray-core))
-$(eval $(call BuildPackage,v2ray-example))
-$(eval $(call BuildPackage,v2ray-extra))
+$(eval $(call BuildPackage,$(PKG_NAME)))
