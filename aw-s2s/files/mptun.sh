@@ -5,6 +5,14 @@ listenPort=""
 use_fw4='0'
 [ -n "$(which fw4)" ] && use_fw4='1'
 
+service_mode="$(uci -q get mptun.global.service_mode)"
+[ "${service_mode}" = '' ] && service_mode = 'classic'
+
+notify_IPRB_status() {
+    local status="$(curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","get_IPRB_status",{}]}'| jsonfilter -e '@.result.status')"
+    ubus call gl-session notify "{\"name\": \"mptun.IPRB_status\", \"data\":$status}"
+}
+
 gateway_set_tcptun() {
     local port key
     local cfg="$1"
@@ -90,9 +98,12 @@ EOF
 
 format_udp_cfg() {
     local FILE="$2"
+    local proto_type="$3"
     local interface="$(jsonfilter -q -i $1 -e  '@.udpTun.interface')"
     local peers="$(jsonfilter -q -i $1 -e  '@.udpTun.peers')"
     [ -z "$interface" -o -z "$peers" ] && return 1
+
+    local awg_params="$(jsonfilter -q -i $1 -e '@.udpTun.awgParams' | tr -d '{}"' | tr ',' '\n' | sed 's/:/ = /')"
 
     eval $(echo $interface|jsonfilter -q -e 'address=@.address' -e 'privateKey=@.privateKey')
     eval $(echo $interface|jsonfilter -q -e 'listenPort=@.listenPort')
@@ -101,6 +112,9 @@ cat >$FILE <<EOF
 privateKey=$privateKey
 ${listenPort:+listenPort=$listenPort}
 EOF
+
+    [ "${proto_type}" = 'amneziawg' ] && echo "${awg_params:+$awg_params}" >>$FILE
+
     local i=0
     while true;do
         local peer=$(echo $peers|jsonfilter -q -e "@[$i]")
@@ -124,17 +138,35 @@ EOF
 }
 
 set_udptun() {
+    local WG_TOOL='/usr/bin/wg'
+    local proto_type='wireguard'
     local TMPFILE="/var/run/mpudp.cfg"
     local MTU="$(jsonfilter -q -i $1 -e  '@.udpTun.interface.mtu')"
     local Address="$(jsonfilter -q -i $1 -e  '@.udpTun.interface.address')"
     local DEV=$2
     local MARK=$3
 
-    format_udp_cfg "$1" "${TMPFILE}" || return 1
+    case "${service_mode}" in
+        "IPRB")
+                WG_TOOL="/usr/bin/awg"
+                proto_type="amneziawg"
+            ;;
+        *)
+            WG_TOOL="/usr/bin/wg"
+            proto_type="wireguard"
+        ;;
+    esac
+
+    format_udp_cfg "$1" "${TMPFILE}" "${proto_type}" || return 1
     ip link del dev "${DEV}" 2>/dev/null
-    ip link add dev "${DEV}" type wireguard
+    ip link add dev "${DEV}" type "$proto_type"
     [ -n "$MTU" ] && ip link set mtu "$MTU" "${DEV}" 
-    wg setconf "${DEV}" "${TMPFILE}" || return 1
+    $WG_TOOL setconf "${DEV}" "${TMPFILE}" || return 1
+    [ "${service_mode}" = "IPRB" ] && {
+        uci set mptun.IPRB.state="connecting"
+        uci commit mptun
+        notify_IPRB_status
+    }
     ip address add dev "${DEV}" "${Address}" || return 1
     ip link set up dev "${DEV}" || return 1
 
@@ -729,6 +761,12 @@ clean_udptun() {
     local DEV
     config_get DEV "global" "mptun" "mptun0"
     ip link del dev "${DEV}" 2>/dev/null
+    [ "${service_mode}" = "IPRB" ] && {
+        uci -q set mptun.IPRB.state="disconnected"
+        uci commit mptun
+        rm -rf /tmp/wireguard/"${DEV}"
+        notify_IPRB_status
+    }
 }
 
 clean_p2p_info(){
