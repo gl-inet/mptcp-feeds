@@ -892,9 +892,6 @@ function M.reset(params)
     elseif res.body ~= nil then
         local current_mode = c:get("mptun", "global", "service_mode")
         if current_mode == 'IPRB' then
-            ngx.timer.at(2.0, function()
-                ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
-            end)
             c:delete("mptun", "global", "service_mode")
         end
         c:delete("mptun", "IPRB")
