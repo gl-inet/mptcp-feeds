@@ -142,7 +142,8 @@ local function __get_IPRB_status(params)
     local status = {}
     local identity
     local disabled
-    status.identity = c:get("mptun", "IPRB", "identity") or ''
+    identity = c:get("mptun", "IPRB", "identity") or ''
+    status.identity = identity
     status.lastConnectedTime = c:get("mptun", "IPRB", "lastConnectedTime") or ''
 
     status.be_kicked_out = c:get("mptun", "IPRB", "be_kicked_out") or '0'
@@ -157,15 +158,20 @@ local function __get_IPRB_status(params)
         status.attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
     end
 
-    disabled = c:get("mptun", "IPRB", "disabled") or ''
+    disabled = c:get("mptun", "IPRB", "disabled") or '0'
     if disabled == '1' then
         status.enabled = '0'
     else
-        status.enabled = '1'
+        if identity == 'primary' or identity == 'secondary' then
+            status.enabled = '1'
+        else
+            status.enabled = '0'
+        end
     end
 
     return { status = status }
 end
+
 local function push_status_to_wb()
     local status = __get_IPRB_status()
     ubus.call('gl-session', 'notify', { name = "mptun.IPRB_status", data = status })
@@ -864,7 +870,7 @@ function M.set_use_exit_node(params)
         else
             option.use_exit = '0'
         end
-        option.identity = 'secondary'
+        --option.identity = 'secondary'
         set_IPRB_option(option)
         push_status_to_wb()
 
