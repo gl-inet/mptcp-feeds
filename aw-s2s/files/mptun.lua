@@ -723,9 +723,6 @@ function M.start_service(params)
         option.active = '1'
         set_IPRB_option(option)
 
-        ngx.timer.at(2.0, function()
-            ngx.pipe.spawn({ "/etc/init.d/mptun", "start" }):wait()
-        end)
         push_status_to_wb()
         return {}
     else
@@ -789,9 +786,6 @@ function M.start_connect(params)
         option.active = '1'
         set_IPRB_option(option)
 
-        ngx.timer.at(2.0, function()
-            ngx.pipe.spawn({ "/etc/init.d/mptun", "start" }):wait()
-        end)
         push_status_to_wb()
         return {}
     else
@@ -1046,8 +1040,6 @@ local function snoop_response_identity_verification(resp)
     if enabled ~= is_active then
         if enabled then
             send_net_ctrl_msg('start')
-        else
-            send_net_ctrl_msg('stop')
         end
     end
     return 0
