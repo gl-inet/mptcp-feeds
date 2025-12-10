@@ -591,21 +591,26 @@ local function __raw_request(params)
     httpc:set_timeout(15000)
 
     local resp, err = httpc:request_uri(url, opt)
+    if err ~= nil then
+        return { err_code = -4, err_msg = tostring(err) }
+    end
     local debug_info = {
         url = url,
         req_body = opt.body,
-        req_header = req_header,
-        resp_status = resp.status,
-        resp_body = resp.body
+        req_header = req_header
     }
     --utils.writefile("/tmp/http_debug_info.log", cjson.encode(debug_info))
     local f_deb = io.open("/tmp/http_debug_info.log", "a")
+    if resp ~= nil then
+        debug_info.resp_status = resp.status
+        debug_info.resp_body = resp.body
+    end
     if f_deb ~= nil then
         f_deb:write(cjson.encode(debug_info) .. '\n')
         f_deb:close()
     end
     if resp == nil or not resp.status == nil or not resp.body == nil then
-        return { err_code = -4, err_msg = 'invalid response.' }
+        return { err_code = -5, err_msg = tostring(err) }
     end
     if resp.status == 200 then
         snoop_response(req_path, resp)
