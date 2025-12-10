@@ -64,6 +64,7 @@ local valid_query_and_body_params = {
 }
 
 local snoop_func = {}
+local pre_req_func = {}
 
 local function check_req_header(k, v)
     if not k and not v then
@@ -130,8 +131,10 @@ local function set_IPRB_option(opt)
     c:set("mptun", "IPRB", "service_instance")
     for k, v in pairs(opt) do
         if v and tostring(v) ~= '' then
-            c:set("mptun", "IPRB", tostring(k), tostring(v))
-            c:set("mptun", "IPRB", tostring(k), tostring(v))
+            local old_v = c:get("mptun", "IPRB", tostring(k)) or " "
+            if tostring(old_v) ~= tostring(v) then
+                c:set("mptun", "IPRB", tostring(k), tostring(v))
+            end
         end
     end
     c:commit("mptun")
@@ -474,6 +477,11 @@ function M.get_token()
     return {token = res}
 end
 
+local function pre_do_request(req_path, params)
+    if pre_req_func[req_path] then
+        pre_req_func[req_path](params)
+    end
+end
 local function snoop_response(req_path, resp)
     if snoop_func[req_path] then
         snoop_func[req_path](resp)
@@ -521,6 +529,7 @@ local function __raw_request(params)
         return { err_code = -2, err_msg = 'invalid params.' }
     end
 
+    pre_do_request(req_path, params)
     local timestamp = os.time() .. '000'
     local mac_file = io.open('/proc/gl-hw-info/device_mac', "r") or nil
     local mac
@@ -589,7 +598,12 @@ local function __raw_request(params)
         resp_status = resp.status,
         resp_body = resp.body
     }
-    utils.writefile("/tmp/http_debug_info.log", cjson.encode(debug_info))
+    --utils.writefile("/tmp/http_debug_info.log", cjson.encode(debug_info))
+    local f_deb = io.open("/tmp/http_debug_info.log", "a")
+    if f_deb ~= nil then
+        f_deb:write(cjson.encode(debug_info) .. '\n')
+        f_deb:close()
+    end
     if resp == nil or not resp.status == nil or not resp.body == nil then
         return { err_code = -4, err_msg = 'invalid response.' }
     end
@@ -632,7 +646,7 @@ end
 
 local function get_network_id()
     local c = uci.cursor()
-    local net_id = c.get("mptun", "IPRB", "net_id")
+    local net_id = c:get("mptun", "IPRB", "net_id")
 
     if net_id ~= nil and string.match(net_id, valid_query_and_body_params["networkId"]) == net_id then
         return { err_code = 0, networkId = net_id }
@@ -653,8 +667,8 @@ local function get_network_id()
         if ok and res_table and res_table.info and type(res_table.info) == "table" and res_table.info.networkId then
             net_id = res_table.info.networkId:match("^%s*(.-)%s*$")
             if string.match(net_id, valid_query_and_body_params["networkId"]) == net_id then
-                c.set("mptun", "IPRB", "net_id", net_id)
-                c.commit("mptun")
+                c:set("mptun", "IPRB", "net_id", net_id)
+                c:commit("mptun")
                 return { err_code = 0, networkId = net_id }
             end
         end
@@ -947,6 +961,40 @@ function M.clean_kicked_out_status(params)
     return {}
 end
 
+local function pre_req_deal_identity_verification(req_path, params)
+    local c = uci.cursor()
+    local enabled = true
+    local is_active = true
+    local disabled = c:get("mptun", "IPRB", "disabled") or ''
+    local active = c:get("mptun", "IPRB", "active") or ''
+
+    if disabled == '1' then
+        enabled = false
+    else
+        if disabled == '0' then
+            enabled = true
+        else
+            return 0
+        end
+    end
+    if active == '1' then
+        is_active = true
+    else
+        if active == '0' then
+            is_active = false
+        else
+            return 0
+        end
+    end
+    if enabled ~= is_active then
+        if enabled then
+            send_net_ctrl_msg('start')
+        else
+            send_net_ctrl_msg('stop')
+        end
+    end
+    return 0
+end
 local function snoop_response_identity_verification(resp)
     local ok = false
     local res_table
@@ -1031,17 +1079,7 @@ local function snoop_response_identity_verification(resp)
     opt.net_id = tostring(net_id)
     opt.use_exit = tostring(use_exit)
     set_IPRB_option(opt)
-    local c = uci.cursor()
-    local enabled = true
-    local disabled = c.get("mptun", "IPRB", "disabled") or "0"
-    if disabled == '1' then
-        enabled = false
-    end
-    if enabled ~= is_active then
-        if enabled then
-            send_net_ctrl_msg('start')
-        end
-    end
+
     return 0
 end
 
@@ -1103,6 +1141,7 @@ local function snoop_response_get_access_code(resp)
     return 0
 end
 
+pre_req_func[req_path["req_get_identity"]] = pre_req_deal_identity_verification
 snoop_func[req_path["req_get_identity"]] = snoop_response_identity_verification
 snoop_func[req_path["req_access_by_code"]] = snoop_response_access_by_code
 snoop_func[req_path["req_get_access_code"]] = snoop_response_get_access_code
