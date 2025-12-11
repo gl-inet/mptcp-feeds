@@ -11,12 +11,14 @@ IPRB_identity="$(uci -q get mptun.IPRB.identity)"
 [ "${service_mode}" != "IPRB" ] && return 0
 #["${IPRB_identity}" != "secondary" ] && return 0
 
+peerpubkey_safe="$(echo "$peerpubkey" | sed 's/[^A-Za-z0-9._-]//g')"
+
 if [ "${ACTION}" = "KEYPAIR-CREATED" -a -n "$(echo "${ifname}" | grep "^mptun")" ]; then
     mkdir -p /tmp/wireguard/"${ifname}"/peers
 
     # TODO lock
     active_num="$(ls /tmp/wireguard/"${ifname}"/peers | wc -l)"
-    touch /tmp/wireguard/"${ifname}"/peers/"${peerpubkey}"
+    touch /tmp/wireguard/"${ifname}"/peers/"${peerpubkey_safe}"
     # TODO unlock
     [ "${active_num}" -ne 0 ] && return
 
@@ -29,7 +31,7 @@ fi
 
 if [ "${ACTION}" = "REKEY-TIMEOUT"  -a -n "$(echo "${ifname}" | grep "^mptun")" ]; then
     # TODO lock
-    rm -rf /tmp/wireguard/"${ifname}"/peers/"${peerpubkey}"
+    rm -f /tmp/wireguard/"${ifname}"/peers/"${peerpubkey_safe}"
     active_num="$(ls /tmp/wireguard/"${ifname}"/peers | wc -l)"
 
     # TODO unlock
