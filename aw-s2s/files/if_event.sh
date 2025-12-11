@@ -5,6 +5,8 @@
 . /lib/functions/gl_util.sh
 . /lib/functions/mptun.sh
 
+LOCKFILE=/tmp/run/iprb_wg_event.lock
+
 service_mode="$(uci -q get mptun.global.service_mode)"
 #IPRB_disabled="$(uci -q get mptun.IPRB.disabled)"
 IPRB_identity="$(uci -q get mptun.IPRB.identity)"
@@ -16,10 +18,21 @@ peerpubkey_safe="$(echo "$peerpubkey" | sed 's/[^A-Za-z0-9._-]//g')"
 if [ "${ACTION}" = "KEYPAIR-CREATED" -a -n "$(echo "${ifname}" | grep "^mptun")" ]; then
     mkdir -p /tmp/wireguard/"${ifname}"/peers
 
-    # TODO lock
+    # lock
+    count=1
+    while [ -f "${LOCKFILE}" ] && [ $count -le 3 ]; do
+        sleep 1
+        count=$(($count+1))
+    done
+    rm -f "$LOCKFILE"
+    echo $$ > ${LOCKFILE}
+    trap 'rm -f "$LOCKFILE"; exit' EXIT INT TERM
+
     active_num="$(ls /tmp/wireguard/"${ifname}"/peers | wc -l)"
     touch /tmp/wireguard/"${ifname}"/peers/"${peerpubkey_safe}"
-    # TODO unlock
+    # unlock
+    rm -f $LOCKFILE
+
     [ "${active_num}" -ne 0 ] && return
 
     con_time="$(date +%s)"
@@ -30,16 +43,28 @@ if [ "${ACTION}" = "KEYPAIR-CREATED" -a -n "$(echo "${ifname}" | grep "^mptun")"
 fi
 
 if [ "${ACTION}" = "REKEY-TIMEOUT"  -a -n "$(echo "${ifname}" | grep "^mptun")" ]; then
-    # TODO lock
+     # lock
+    count=1
+    while [ -f "${LOCKFILE}" ] && [ $count -le 3 ]; do
+        sleep 1
+        count=$(($count+1))
+    done
+    rm -f "$LOCKFILE"
+    echo $$ > ${LOCKFILE}
+    trap 'rm -f "$LOCKFILE"; exit' EXIT INT TERM
+
     rm -f /tmp/wireguard/"${ifname}"/peers/"${peerpubkey_safe}"
     active_num="$(ls /tmp/wireguard/"${ifname}"/peers | wc -l)"
 
-    # TODO unlock
+    # unlock
+    rm -f $LOCKFILE
+
     [ "${active_num}" -ne 0 ] && return
 
     uci -q set mptun.IPRB.state="connecting"
     uci commit mptun
     notify_IPRB_status
 fi
+
 
 
