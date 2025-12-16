@@ -1106,7 +1106,13 @@ local function snoop_response_identity_verification(resp)
     opt.use_exit = tostring(use_exit)
     set_IPRB_option(opt)
 
-    return 0
+    return {
+        err_code = 0,
+        identity = tostring(identity),
+        active = tostring(active),
+        net_id = tostring(net_id),
+        use_exit = tostring(use_exit)
+    }
 end
 
 local function snoop_response_access_by_code(resp)
@@ -1167,6 +1173,31 @@ local function snoop_response_get_access_code(resp)
     return 0
 end
 
+--[[
+    @method-type: call
+    @method-name: get_node_info
+    @method-desc: get device identity for cloud.
+    @out err_code.
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_node_info",{}]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": { "info: {err_code = 0,identity = tostring(identity),active = tostring(active),net_id = tostring(net_id),use_exit = tostring(use_exit)}}}
+--]]
+function M.get_node_info(params)
+    local ret = nil
+    local resp = get_info_from_cloud()
+    if resp ~= nil and resp.err_code == 0 and resp.status_code ~= nil and resp.body ~= nil then
+        local opt = {
+            status_code = resp.status_code,
+            body = resp.body
+        }
+        ret = snoop_response_identity_verification(opt)
+        if type(ret) ~= "table" then
+            return { err_code = -2, err_msg = "fail!" }
+        end
+    else
+        return { err_code = -1, err_msg = "fail!" }
+    end
+    return { info = ret }
+end
 pre_req_func[req_path["req_get_identity"]] = pre_req_deal_identity_verification
 snoop_func[req_path["req_get_identity"]] = snoop_response_identity_verification
 snoop_func[req_path["req_access_by_code"]] = snoop_response_access_by_code
