@@ -121,13 +121,21 @@ local function check_params_valid(params, checkfunc)
     return check(nil, params)
 end
 
+local function set_service_mode(mode)
+    local c = uci.cursor()
+    if mode ~= nil and (mode == 'IPRB' or mode == 'classic') then
+        c:set("mptun", "global", "service_mode", tostring(mode))
+        c:commit("mptun")
+    else
+        return -1
+    end
+end
 local function set_IPRB_option(opt)
     local c = uci.cursor()
     if not opt then
         return -1
     end
 
-    c:set("mptun", "global", "service_mode", "IPRB")
     c:set("mptun", "IPRB", "service_instance")
     for k, v in pairs(opt) do
         if v and tostring(v) ~= '' then
@@ -138,46 +146,6 @@ local function set_IPRB_option(opt)
         end
     end
     c:commit("mptun")
-end
-
-local function __get_IPRB_status(params)
-    local c = uci.cursor()
-    local status = {}
-    local identity
-    local disabled
-    identity = c:get("mptun", "IPRB", "identity") or ''
-    status.identity = identity
-    status.lastConnectedTime = c:get("mptun", "IPRB", "lastConnectedTime") or ''
-
-    status.be_kicked_out = c:get("mptun", "IPRB", "be_kicked_out") or '0'
-    local state = c:get("mptun", "IPRB", "state") or 'connecting'
-    if state ~= 'connected' then
-        state = "connecting"
-    end
-    status.state = state
-    if identity == "primary" or identity == "secondary" then
-        status.attempt_to_be = identity
-    else
-        status.attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
-    end
-
-    disabled = c:get("mptun", "IPRB", "disabled") or '0'
-    if disabled == '1' then
-        status.enabled = '0'
-    else
-        if identity == 'primary' or identity == 'secondary' then
-            status.enabled = '1'
-        else
-            status.enabled = '0'
-        end
-    end
-
-    return { status = status }
-end
-
-local function push_status_to_wb()
-    local status = __get_IPRB_status()
-    ubus.call('gl-session', 'notify', { name = "mptun.IPRB_status", data = status })
 end
 
 local function net_topology_is_exist()
@@ -638,6 +606,59 @@ function M.raw_request(raw_params)
     end
 end
 
+local function get_info_from_cloud()
+    local opt = {
+        ["req_method"] = "POST",
+        ["req_path"] = req_path["req_get_identity"]
+    }
+    return __raw_request(opt)
+end
+
+local function __get_IPRB_status(params)
+    local c = uci.cursor()
+    local status = {}
+    local identity
+    local disabled
+    local service_mode
+    service_mode = c:get("mptun", "global", "service_mode") or ''
+    if service_mode == nil or service_mode == '' then
+        get_info_from_cloud()
+        c:load("mptun")
+    end
+    identity = c:get("mptun", "IPRB", "identity") or ''
+    status.identity = identity
+    status.lastConnectedTime = c:get("mptun", "IPRB", "lastConnectedTime") or ''
+
+    status.be_kicked_out = c:get("mptun", "IPRB", "be_kicked_out") or '0'
+    local state = c:get("mptun", "IPRB", "state") or 'connecting'
+    if state ~= 'connected' then
+        state = "connecting"
+    end
+    status.state = state
+    if identity == "primary" or identity == "secondary" then
+        status.attempt_to_be = identity
+    else
+        status.attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
+    end
+
+    disabled = c:get("mptun", "IPRB", "disabled") or '0'
+    if disabled == '1' then
+        status.enabled = '0'
+    else
+        if identity == 'primary' or identity == 'secondary' then
+            status.enabled = '1'
+        else
+            status.enabled = '0'
+        end
+    end
+
+    return { status = status }
+end
+
+local function push_status_to_wb()
+    local status = __get_IPRB_status()
+    ubus.call('gl-session', 'notify', { name = "mptun.IPRB_status", data = status })
+end
 --[[
     @method-type: call
     @method-name: get_IPRB_status
@@ -658,11 +679,7 @@ local function get_network_id()
     if net_id ~= nil and string.match(net_id, valid_query_and_body_params["networkId"]) == net_id then
         return { err_code = 0, networkId = net_id }
     end
-    local opt = {
-        ["req_method"] = "POST",
-        ["req_path"] = req_path["req_get_identity"]
-    }
-    local res = __raw_request(opt)
+    local res = get_info_from_cloud()
     if res.status_code ~= 0 or not res.status_code or res.status_code ~= 200 then
         return { err_code = -1 }
     else
@@ -1056,6 +1073,8 @@ local function snoop_response_identity_verification(resp)
     end
     if is_IPRB ~= true then
         return 1
+    else
+        set_service_mode('IPRB')
     end
     if parse_fail == true then
         return -2
