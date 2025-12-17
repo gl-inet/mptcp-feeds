@@ -64,6 +64,9 @@ if [ "${ACTION}" = "REKEY-TIMEOUT"  -a -n "$(echo "${ifname}" | grep "^mptun")" 
     uci -q set mptun.IPRB.state="connecting"
     uci commit mptun
     notify_IPRB_status
+
+    # Try switching ports to reconnect and avoid disconnections caused by network changes.
+    awg set "${ifname}" listen-port 0
 fi
 
 
