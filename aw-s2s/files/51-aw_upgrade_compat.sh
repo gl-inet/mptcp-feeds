@@ -6,7 +6,7 @@ dns_mark="$(uci -q get mptun.global.dnsmark)"
     dns_mark='0x8'
 }
 
-uci -q set mptun.global.base_url='https://api.astrowarp.net'
+[ -z "$(uci -q get mptun.global.base_url)" ] && uci -q set mptun.global.base_url='https://api.astrowarp.net'
 uci commit mptun
 
 [ -n "$(uci -q get firewall.adguard_home)" ] && \
