@@ -924,19 +924,26 @@ function M.reset(params)
         ["req_method"] = "POST",
         ["req_path"] = req_path["req_reset"],
     }
-    local res = __raw_request(opt)
-    if res.err_code ~= 0 or res.status_code == nil or res.status_code ~= 200 then
+    local resp = __raw_request(opt)
+    if resp.err_code ~= 0 or resp.status_code == nil or resp.status_code ~= 200 then
         return { err_code = -1, err_msg = "https communicate fail!" }
-    elseif res.body ~= nil then
-        local current_mode = c:get("mptun", "global", "service_mode")
-        if current_mode == 'IPRB' then
-            c:delete("mptun", "global", "service_mode")
-        end
-        c:delete("mptun", "IPRB")
-        c:commit("mptun")
+    elseif resp.body ~= nil then
+        local ok = false
+        local res
+        ok, res = pcall(cjson.decode, resp.body)
+        if ok and res.info ~= nil and type(res.info) == 'boolean' and res.info == true then
+            local current_mode = c:get("mptun", "global", "service_mode")
+            if current_mode == 'IPRB' then
+                c:delete("mptun", "global", "service_mode")
+            end
+            c:delete("mptun", "IPRB")
+            c:commit("mptun")
 
-        push_status_to_wb()
-        return {}
+            push_status_to_wb()
+            return {}
+        elseif res.msg ~= nil then
+            return { err_code = -3, err_msg = res.msg }
+        end
     end
     return { err_code = -2, err_msg = "reset fail !" }
 end
