@@ -1137,28 +1137,15 @@ local function snoop_response_access_by_code(resp)
     if not ok or res_table == nil then
         return -1
     end
-
-    local c = uci.cursor()
-    local net_id
-    local parse_fail = false
     if res_table ~= nil and res_table.info ~= nil and type(res_table.info) == "table" then
-        if res_table.info.networkId ~= nil and type(res_table.info.networkId) == "string" then
-            net_id = res_table.info.networkId:match("^%s*(.-)%s*$")
-            if string.match(net_id, valid_query_and_body_params["networkId"]) ~= net_id then
-                parse_fail = true
-            end
-        else
-            parse_fail = true
+        if res_table.info.verifyResult == nil or type(res_table.info.verifyResult) ~= "boolean" or res_table.info.verifyResult ~= true then
+            return -3
         end
     end
 
-    if parse_fail == true then
-        return -2
-    end
     -- write configuration.
     local opt = {}
     opt.identity = "secondary"
-    opt.net_id = tostring(net_id)
     opt.disabled = '0'
     set_IPRB_option(opt)
     push_status_to_wb()
