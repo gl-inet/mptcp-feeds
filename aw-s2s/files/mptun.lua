@@ -768,15 +768,7 @@ function M.start_service(params)
     end
 end
 
---[[
-    @method-type: call
-    @method-name: pause_service
-    @method-desc: stop mptun primary side service.
-    @out err_code.
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "pause_service",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.pause_service(params)
+local function __pause_service(params)
     send_net_ctrl_msg('stop')
     local option = {}
     option.disabled = '1'
@@ -791,6 +783,17 @@ function M.pause_service(params)
     return {}
 end
 
+--[[
+    @method-type: call
+    @method-name: pause_service
+    @method-desc: stop mptun primary side service.
+    @out err_code.
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "pause_service",{}]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
+--]]
+function M.pause_service(params)
+    return __pause_service(params)
+end
 --[[
     @method-type: call
     @method-name: start_connect
@@ -831,15 +834,7 @@ function M.start_connect(params)
     end
 end
 
---[[
-    @method-type: call
-    @method-name: pause_connect
-    @method-desc: stop mptun second side connections.
-    @out err_code.
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "pause_connect",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.pause_connect(params)
+local function __pause_connect(params)
     send_net_ctrl_msg('stop')
     local option = {}
     option.disabled = '1'
@@ -854,6 +849,17 @@ function M.pause_connect(params)
     push_status_to_wb()
 
     return {}
+end
+--[[
+    @method-type: call
+    @method-name: pause_connect
+    @method-desc: stop mptun second side connections.
+    @out err_code.
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "pause_connect",{}]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
+--]]
+function M.pause_connect(params)
+    return __pause_connect(params)
 end
 
 --[[
@@ -1204,6 +1210,39 @@ function M.get_node_info(params)
         return { err_code = -1, err_msg = "fail!" }
     end
     return { info = ret }
+end
+--[[
+    @method-type: call
+    @method-name: get_node_info
+    @method-desc: get device identity for cloud.
+    @out err_code.
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "report_event_to_mptun",{"class": "cloud", "msg": "cloud service is closed", "info":{ ... }}]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {} }
+--]]
+function M.report_event_to_mptun(params)
+    if params.class == nil or params.info == nil then
+        return {}
+    end
+    local event_class = params.class
+    local event_info = params.info
+    --local event_msg = params.msg or ''
+    if event_class == 'cloud' then
+        local code = event_info.event_code
+        if code == nil or type(code) ~= 'number' then
+            return {}
+        end
+        -- code 11 is cloud service stoped.
+        if code == 11 then
+            local c = uci.cursor()
+            local identity = c:get("mptun", "IPRB", "identity") or ''
+            if identity == 'primary' then
+                __pause_service()
+            elseif identity == 'secondary' then
+                __pause_connect()
+            end
+        end
+    end
+    return {}
 end
 pre_req_func[req_path["req_get_identity"]] = pre_req_deal_identity_verification
 snoop_func[req_path["req_get_identity"]] = snoop_response_identity_verification
