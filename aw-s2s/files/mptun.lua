@@ -779,6 +779,9 @@ local function __pause_service(params)
     ngx.timer.at(2.0, function()
         ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
     end)
+    local c = uci.cursor()
+    c:set("mptun", "global", "enable", "0")
+    c:commit("mptun")
     push_status_to_wb()
     return {}
 end
@@ -840,12 +843,14 @@ local function __pause_connect(params)
     option.disabled = '1'
     option.identity = 'secondary'
     set_IPRB_option(option)
-    local c = uci.cursor()
 
     -- TODO stop()
     ngx.timer.at(2.0, function()
         ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
     end)
+    local c = uci.cursor()
+    c:set("mptun", "global", "enable", "0")
+    c:commit("mptun")
     push_status_to_wb()
 
     return {}
