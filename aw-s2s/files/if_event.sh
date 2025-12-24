@@ -29,7 +29,7 @@ if [ "${ACTION}" = "KEYPAIR-CREATED" -a -n "$(echo "${ifname}" | grep "^mptun")"
     trap 'rm -f "$LOCKFILE"; exit' EXIT INT TERM
 
     active_num="$(ls /tmp/wireguard/"${ifname}"/peers | wc -l)"
-    touch /tmp/wireguard/"${ifname}"/peers/"${peerpubkey_safe}"
+    [ -f /tmp/wireguard/"${ifname}"/peers/"${peerpubkey_safe}" ] || touch /tmp/wireguard/"${ifname}"/peers/"${peerpubkey_safe}"
     # unlock
     rm -f $LOCKFILE
 
@@ -62,6 +62,7 @@ if [ "${ACTION}" = "REKEY-TIMEOUT"  -a -n "$(echo "${ifname}" | grep "^mptun")" 
     [ "${active_num}" -ne 0 ] && return
 
     uci -q set mptun.IPRB.state="connecting"
+    uci -q delete mptun.IPRB.lastConnectedTime
     uci commit mptun
     notify_IPRB_status
 

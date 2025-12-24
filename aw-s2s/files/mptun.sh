@@ -164,6 +164,7 @@ set_udptun() {
     $WG_TOOL setconf "${DEV}" "${TMPFILE}" || return 1
     [ "${service_mode}" = "IPRB" ] && {
         uci set mptun.IPRB.state="connecting"
+        uci -q delete mptun.IPRB.lastConnectedTime
         uci commit mptun
         notify_IPRB_status
     }
