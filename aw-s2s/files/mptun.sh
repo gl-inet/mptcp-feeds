@@ -221,6 +221,12 @@ set_firewall()
     uci set firewall.lan2mptun.src='lan'
     uci set firewall.lan2mptun.dest='mptun'
 
+    [ "${service_mode}" = "IPRB" ] && {
+        uci set firewall.guest2mptun=forwarding
+        uci set firewall.guest2mptun.src='guest'
+        uci set firewall.guest2mptun.dest='mptun'
+    }
+
     uci set firewall.mptun_local_rule=rule
     uci set firewall.mptun_local_rule.name='mptun local rule'
     uci set firewall.mptun_local_rule.src="mptun"
@@ -749,6 +755,10 @@ clean_udptun() {
         uci -q del firewall.mptun2wan
         uci -q del firewall.dns_mptun
         uci -q del firewall.dns_mptun_guest
+
+        [ "${service_mode}" = "IPRB" ] && {
+            uci -q del firewall.guest2mptun
+        }
         uci commit firewall
         /etc/init.d/firewall reload 2>/dev/null
     }
