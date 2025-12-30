@@ -22,6 +22,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_BIN) $(CURDIR)/files/proxy-route.sh $(1)/usr/bin/
 	$(INSTALL_BIN) $(CURDIR)/files/get_mplinkip.sh $(1)/usr/bin/
 	$(INSTALL_BIN) $(CURDIR)/files/get_mpsrv_delay.sh $(1)/usr/bin/
+	$(INSTALL_BIN) $(CURDIR)/files/mptun_tools.sh $(1)/usr/bin/mptun_tools
 
 	$(INSTALL_DIR) $(1)/etc/mptun/
 	$(INSTALL_DATA) $(CURDIR)/files/dnsmasq.conf.mptun $(1)/etc/
