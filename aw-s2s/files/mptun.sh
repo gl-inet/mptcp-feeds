@@ -233,38 +233,44 @@ set_firewall()
     uci -q delete firewall.mptun_local_rule.proto
     uci add_list firewall.mptun_local_rule.proto='all'
 
-    uci set firewall.mptun_forward_rule=rule
-    uci set firewall.mptun_forward_rule.name='mptun forward rule'
-    uci set firewall.mptun_forward_rule.src="mptun"
-    uci set firewall.mptun_forward_rule.dest="*"
-    uci -q delete firewall.mptun_forward_rule.proto
-    uci add_list firewall.mptun_forward_rule.proto="all"
-    uci set firewall.mptun_forward_rule.target="ACCEPT"
+    # Forwarding is not allowed by default in IPRB mode.
+    if [ "${service_mode}" != 'IPRB' ] ;then
+        uci set firewall.mptun_forward_rule=rule
+        uci set firewall.mptun_forward_rule.name='mptun forward rule'
+        uci set firewall.mptun_forward_rule.src="mptun"
+        uci set firewall.mptun_forward_rule.dest="*"
+        uci -q delete firewall.mptun_forward_rule.proto
+        uci add_list firewall.mptun_forward_rule.proto="all"
+        uci set firewall.mptun_forward_rule.target="ACCEPT"
+    fi
 
-    local rule_target="accept"
-    if [ "${use_fw4}" = '1' ]; then
-        [ -z "$srcips" -o -z "$destips" ] && rule_target="drop"
-    else
-        uci set firewall.mptun_subnet_rule=rule
-        uci set firewall.mptun_subnet_rule.name='mptun subnet rule'
-        uci set firewall.mptun_subnet_rule.src="mptun"
-        uci set firewall.mptun_subnet_rule.dest='*'
-        uci -q delete firewall.mptun_subnet_rule.proto
-        uci add_list firewall.mptun_subnet_rule.proto='all'
-        uci -q delete firewall.mptun_subnet_rule.src_ip
-        for i in $srcips;do
-            uci add_list firewall.mptun_subnet_rule.src_ip="$i"
-        done
-        #uci -q delete firewall.mptun_subnet_rule.dest_ip
-        uci -q delete firewall.mptun_subnet_rule.extra
-        for i in $destips;do
-            uci set firewall.mptun_subnet_rule.extra='-i mptun+ -m conntrack --ctstate DNAT'
-            #uci add_list firewall.mptun_subnet_rule.dest_ip="$i"
-        done
-        if [ -z "$srcips" -o -z "$destips" ];then
-            uci set firewall.mptun_subnet_rule.target='DROP'
+    # DNAT does not exist in IPRB mode.
+    if [ "${service_mode}" != 'IPRB' ] ;then
+        local rule_target="accept"
+        if [ "${use_fw4}" = '1' ]; then
+            [ -z "$srcips" -o -z "$destips" ] && rule_target="drop"
         else
-            uci set firewall.mptun_subnet_rule.target='ACCEPT'
+            uci set firewall.mptun_subnet_rule=rule
+            uci set firewall.mptun_subnet_rule.name='mptun subnet rule'
+            uci set firewall.mptun_subnet_rule.src="mptun"
+            uci set firewall.mptun_subnet_rule.dest='*'
+            uci -q delete firewall.mptun_subnet_rule.proto
+            uci add_list firewall.mptun_subnet_rule.proto='all'
+            uci -q delete firewall.mptun_subnet_rule.src_ip
+            for i in $srcips;do
+                uci add_list firewall.mptun_subnet_rule.src_ip="$i"
+            done
+            #uci -q delete firewall.mptun_subnet_rule.dest_ip
+            uci -q delete firewall.mptun_subnet_rule.extra
+            for i in $destips;do
+                uci set firewall.mptun_subnet_rule.extra='-i mptun+ -m conntrack --ctstate DNAT'
+                #uci add_list firewall.mptun_subnet_rule.dest_ip="$i"
+            done
+            if [ -z "$srcips" -o -z "$destips" ];then
+                uci set firewall.mptun_subnet_rule.target='DROP'
+            else
+                uci set firewall.mptun_subnet_rule.target='ACCEPT'
+            fi
         fi
     fi
 
@@ -328,7 +334,11 @@ set_firewall()
     }
     uci commit firewall
     /etc/init.d/firewall reload 2>/dev/null
-    [ "${use_fw4}" = '1' ] && nft insert rule inet fw4 forward_mptun iifname "mptun0" ct status dnat counter $rule_target
+
+    # DNAT does not exist in IPRB mode.
+    if [ "${service_mode}" != 'IPRB' ] ;then
+        [ "${use_fw4}" = '1' ] && nft insert rule inet fw4 forward_mptun iifname "mptun0" ct status dnat counter $rule_target
+    fi
 }
 
 set_dns() {
