@@ -606,6 +606,7 @@ function M.raw_request(raw_params)
     end
 end
 
+-- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 local function get_info_from_cloud()
     local opt = {
         ["req_method"] = "POST",
@@ -614,18 +615,39 @@ local function get_info_from_cloud()
     return __raw_request(opt)
 end
 
-local function __get_IPRB_status(params)
+-- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
+local function IPRB_is_enabled()
     local c = uci.cursor()
-    local status = {}
-    local identity
-    local disabled
-    local service_mode
-    service_mode = c:get("mptun", "global", "service_mode") or ''
+    local service_mode = c:get("mptun", "global", "service_mode") or ''
     if service_mode == nil or service_mode == '' then
         get_info_from_cloud()
         c:load("mptun")
+        service_mode = c:get("mptun", "global", "service_mode") or ''
     end
-    identity = c:get("mptun", "IPRB", "identity") or ''
+    local disabled = c:get("mptun", "IPRB", "disabled") or '0'
+    local identity = c:get("mptun", "IPRB", "identity") or ''
+    if disabled == '1' or service_mode ~= "IPRB" then
+        return false
+    else
+        if identity == 'primary' or identity == 'secondary' then
+            return true
+        else
+            return false
+        end
+    end
+end
+
+local function __get_IPRB_status(params)
+    local status = {}
+
+    if IPRB_is_enabled() == true then
+        status.enabled = '1'
+    else
+        status.enabled = '0'
+    end
+
+    local c = uci.cursor()
+    local identity = c:get("mptun", "IPRB", "identity") or ''
     status.identity = identity
     status.lastConnectedTime = c:get("mptun", "IPRB", "lastConnectedTime") or ''
 
@@ -640,18 +662,6 @@ local function __get_IPRB_status(params)
     else
         status.attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
     end
-
-    disabled = c:get("mptun", "IPRB", "disabled") or '0'
-    if disabled == '1' then
-        status.enabled = '0'
-    else
-        if identity == 'primary' or identity == 'secondary' then
-            status.enabled = '1'
-        else
-            status.enabled = '0'
-        end
-    end
-
     return { status = status }
 end
 
@@ -728,18 +738,10 @@ local function send_net_ctrl_msg(active)
     end
 end
 
---[[
-    @method-type: call
-    @method-name: start_service
-    @method-desc: start mptun primary side service.
-    @out err_code.
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "start_service",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.start_service(params)
+local function __start_service(params)
     local resp = send_net_ctrl_msg('start')
     if resp == nil or resp.err_code ~= 0 then
-        return { err_code = -1, err_msg = "communicate fail !", status_code = resp.status_code, body = resp.body }
+        return { err_code = -1, err_msg = "communicate fail !" }
     end
 
     local ok = false
@@ -768,6 +770,17 @@ function M.start_service(params)
     end
 end
 
+--[[
+    @method-type: call
+    @method-name: start_service
+    @method-desc: start mptun primary side service.
+    @out err_code.
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "start_service",{}]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
+--]]
+function M.start_service(params)
+    return __start_service(params)
+end
 local function __pause_service(params)
     send_net_ctrl_msg('stop')
     local option = {}
@@ -797,18 +810,10 @@ end
 function M.pause_service(params)
     return __pause_service(params)
 end
---[[
-    @method-type: call
-    @method-name: start_connect
-    @method-desc: start mptun second side connections.
-    @out err_code.
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "start_connect",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.start_connect(params)
+local function __start_connect(params)
     local resp = send_net_ctrl_msg('start')
     if resp == nil or resp.err_code ~= 0 then
-        return { err_code = -1, err_msg = "communicate fail !", status_code = resp.status_code, body = resp.body }
+        return { err_code = -1, err_msg = "communicate fail !" }
     end
 
     local ok = false
@@ -837,6 +842,17 @@ function M.start_connect(params)
     end
 end
 
+--[[
+    @method-type: call
+    @method-name: start_connect
+    @method-desc: start mptun second side connections.
+    @out err_code.
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "start_connect",{}]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
+--]]
+function M.start_connect(params)
+    return __start_connect(params)
+end
 local function __pause_connect(params)
     send_net_ctrl_msg('stop')
     local option = {}
@@ -1223,22 +1239,45 @@ function M.report_event_to_mptun(params)
         if code == nil or type(code) ~= 'number' then
             return {}
         end
-        -- code 11 is cloud service stoped.
         if code == 11 then
+            -- code 11 is cloud service stoped.
+            local is_enable = IPRB_is_enabled() or false
+            if is_enable then
+                local c = uci.cursor()
+                local identity = c:get("mptun", "IPRB", "identity") or ''
+                if identity == 'primary' then
+                    __pause_service()
+                elseif identity == 'secondary' then
+                    __pause_connect()
+                end
+                local opt = {}
+                opt.need_revive = "1"
+                set_IPRB_option(opt)
+            end
+        elseif code == 10 then
+            -- code 10 is cloud service restored.
             local c = uci.cursor()
+            local service_mode = c:get("mptun", "global", "service_mode") or ''
             local identity = c:get("mptun", "IPRB", "identity") or ''
-            if identity == 'primary' then
-                __pause_service()
-            elseif identity == 'secondary' then
-                __pause_connect()
+            local need_revive = c:get("mptun", "IPRB", "need_revive") == '1'
+            if service_mode == "IPRB" and need_revive == true then
+                if identity == 'primary' then
+                    __start_service()
+                elseif identity == 'secondary' then
+                    __start_connect()
+                end
+                c:delete("mptun", "IPRB", "need_revive")
+                c:commit("mptun")
             end
         end
     end
     return {}
 end
+
 pre_req_func[req_path["req_get_identity"]] = pre_req_deal_identity_verification
 snoop_func[req_path["req_get_identity"]] = snoop_response_identity_verification
 snoop_func[req_path["req_access_by_code"]] = snoop_response_access_by_code
 snoop_func[req_path["req_get_access_code"]] = snoop_response_get_access_code
+
 return M
 
