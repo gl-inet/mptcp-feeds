@@ -7,6 +7,7 @@ use_fw4='0'
 
 service_mode="$(uci -q get mptun.global.service_mode)"
 [ "${service_mode}" = '' ] && service_mode='classic'
+IPRB_identity="$(uci -q get mptun.IPRB.identity)"
 
 notify_IPRB_status() {
     local status="$(curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","get_IPRB_status",{}]}'| jsonfilter -e '@.result')"
@@ -226,6 +227,16 @@ set_firewall()
         uci set firewall.guest2mptun.src='guest'
         uci set firewall.guest2mptun.dest='mptun'
     }
+
+    # IPRB mode, as the primary, allows DNS.
+    if [ "${service_mode}" = 'IPRB' -a "${IPRB_identity}" = 'primary' ] ;then
+        uci set firewall.mptun_allowe_dns=rule
+        uci set firewall.mptun_allowe_dns.name='mptun allowe dns'
+        uci set firewall.mptun_allowe_dns.src="mptun"
+        uci set firewall.mptun_allowe_dns.proto='tcp udp'
+        uci set firewall.mptun_allowe_dns.dest_port='53'
+        uci set firewall.mptun_allowe_dns.target='ACCEPT'
+    fi
 
     uci set firewall.mptun_local_rule=rule
     uci set firewall.mptun_local_rule.name='mptun local rule'
