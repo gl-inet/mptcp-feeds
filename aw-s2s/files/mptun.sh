@@ -777,9 +777,10 @@ clean_udptun() {
         uci -q del firewall.dns_mptun
         uci -q del firewall.dns_mptun_guest
 
-        [ "${service_mode}" = "IPRB" ] && {
-            uci -q del firewall.guest2mptun
-        }
+        # clean IPRB mode-specific rules
+        uci -q del firewall.guest2mptun
+        uci -q del firewall.mptun_allowe_dns
+
         uci commit firewall
         /etc/init.d/firewall reload 2>/dev/null
     }
