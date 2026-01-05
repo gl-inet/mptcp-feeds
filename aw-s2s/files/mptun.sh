@@ -1,6 +1,7 @@
 TYPE="EDGE"
 DEBUG_SERVER="$(cat /etc/mptun/debugip 2>/dev/null)"
 listenPort=""
+AW_P2P_PORT='58080'
 
 use_fw4='0'
 [ -n "$(which fw4)" ] && use_fw4='1'
@@ -187,13 +188,14 @@ set_firewall()
 {
     local cfg="$1"
     local DEV="$2"
-    local srcips destips localips exitnode type
+    local srcips destips localips exitnode type enable_p2p
     local use_exit=$(uci -q get mptun.global.use_exit)
     local i=0
 
     localips=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.allowedSrc")
     exitnode=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.exitNode")
     type=$(jsonfilter -i $cfg -q -e "@.type")
+    enable_p2p=$(jsonfilter -i $cfg -q -e "@.enableP2p")
 
     while true;do
             local client=$(jsonfilter -i $cfg -q -e "@.udpTun.clients[$i]")
@@ -238,11 +240,25 @@ set_firewall()
         uci set firewall.mptun_allowe_dns.target='ACCEPT'
     fi
 
+    if [ "${service_mode}" = 'IPRB' -a "${enable_p2p}" = 'true' ] ;then
+        uci set firewall.mptun_allowe_aw_p2p=rule
+        uci set firewall.mptun_allowe_aw_p2p.name='mptun allowe aw p2p'
+        uci set firewall.mptun_allowe_aw_p2p.src="mptun"
+        uci set firewall.mptun_allowe_aw_p2p.proto='tcp udp'
+        uci set firewall.mptun_allowe_aw_p2p.dest_port="${AW_P2P_PORT}"
+        uci set firewall.mptun_allowe_aw_p2p.target='ACCEPT'
+    fi
+
     uci set firewall.mptun_local_rule=rule
     uci set firewall.mptun_local_rule.name='mptun local rule'
     uci set firewall.mptun_local_rule.src="mptun"
     uci -q delete firewall.mptun_local_rule.proto
-    uci add_list firewall.mptun_local_rule.proto='all'
+    # IPRB mode, just allowes icmp.
+    if [ "${service_mode}" = 'IPRB' ] ;then
+        uci add_list firewall.mptun_local_rule.proto='icmp'
+    else
+        uci add_list firewall.mptun_local_rule.proto='all'
+    fi
 
     # Forwarding is not allowed by default in IPRB mode.
     if [ "${service_mode}" != 'IPRB' ] ;then
@@ -780,6 +796,7 @@ clean_udptun() {
         # clean IPRB mode-specific rules
         uci -q del firewall.guest2mptun
         uci -q del firewall.mptun_allowe_dns
+        uci -q del firewall.mptun_allowe_aw_p2p
 
         uci commit firewall
         /etc/init.d/firewall reload 2>/dev/null
