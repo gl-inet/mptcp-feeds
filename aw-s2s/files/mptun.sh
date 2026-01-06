@@ -253,12 +253,7 @@ set_firewall()
     uci set firewall.mptun_local_rule.name='mptun local rule'
     uci set firewall.mptun_local_rule.src="mptun"
     uci -q delete firewall.mptun_local_rule.proto
-    # IPRB mode, just allowes icmp.
-    if [ "${service_mode}" = 'IPRB' ] ;then
-        uci add_list firewall.mptun_local_rule.proto='icmp'
-    else
-        uci add_list firewall.mptun_local_rule.proto='all'
-    fi
+    uci add_list firewall.mptun_local_rule.proto='all'
 
     # Forwarding is not allowed by default in IPRB mode.
     if [ "${service_mode}" != 'IPRB' ] ;then
@@ -309,6 +304,11 @@ set_firewall()
         uci set firewall.mptun_local_rule.target='DROP'
     else
         uci set firewall.mptun_local_rule.target='ACCEPT'
+        # IPRB mode, just allowes icmp.
+        if [ "${service_mode}" = 'IPRB' ] ;then
+            uci -q delete firewall.mptun_local_rule.proto
+            uci add_list firewall.mptun_local_rule.proto='icmp'
+        fi
     fi
 
      [ "$use_exit" = "1" ] && {
