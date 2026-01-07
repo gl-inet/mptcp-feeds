@@ -2,6 +2,9 @@ TYPE="EDGE"
 DEBUG_SERVER="$(cat /etc/mptun/debugip 2>/dev/null)"
 listenPort=""
 
+use_fw4='0'
+[ -n "$(which fw4)" ] && use_fw4='1'
+
 gateway_set_tcptun() {
     local port key
     local cfg="$1"
@@ -200,7 +203,7 @@ set_firewall()
     uci set firewall.mptun_forward_rule.target="ACCEPT"
 
     local rule_target="accept"
-    if [ -e "/usr/sbin/nft" ]; then
+    if [ "${use_fw4}" = '1' ]; then
         [ -z "$srcips" -o -z "$destips" ] && rule_target="drop"
     else
         uci set firewall.mptun_subnet_rule=rule
@@ -286,7 +289,7 @@ set_firewall()
     }
     uci commit firewall
     /etc/init.d/firewall reload 2>/dev/null
-    [ -e "/usr/sbin/nft" ] && nft insert rule inet fw4 forward_mptun iifname "mptun0" ct status dnat counter $rule_target
+    [ "${use_fw4}" = '1' ] && nft insert rule inet fw4 forward_mptun iifname "mptun0" ct status dnat counter $rule_target
 }
 
 set_dns() {
@@ -304,7 +307,7 @@ set_dns() {
     [ -f /var/run/dnsmasq/dnsmasq.mptun.pid ] && kill $(cat /var/run/dnsmasq/dnsmasq.mptun.pid) 2>/dev/null
     [ -f /tmp/dnsmasq.d/mpaccess_conf ] && ln -sf /tmp/dnsmasq.d/mpaccess_conf /tmp/dnsmasq.d.mptun/mpaccess_conf
     [ ! -e /tmp/dnsmasq.d.mptun/mpaccess -a -d /tmp/dnsmasq.d/mpaccess ] && ln -s /tmp/dnsmasq.d/mpaccess /tmp/dnsmasq.d.mptun/mpaccess
-    if [ ! -e "/usr/sbin/nft" ]; then
+    if [ "${use_fw4}" != '1' ]; then
         [ -e /tmp/dnsmasq.d.mptun/mptun_policy -a ! -e /tmp/dnsmasq.d/mptun_policy ] && ln -s /tmp/dnsmasq.d.mptun/mptun_policy /tmp/dnsmasq.d/
     fi
     /usr/sbin/dnsmasq -C /etc/dnsmasq.conf.mptun -x /var/run/dnsmasq/dnsmasq.mptun.pid --server=$dns --no-resolv
@@ -337,7 +340,7 @@ set_domain_policy(){
     echo "#Automatically generated, do not edit" >$file
     for i in $list;do
        echo "server=/$i/127.0.0.1#53" >>$file
-       if [ -e "/usr/sbin/nft" ];then
+       if [ "${use_fw4}" = '1' ];then
            echo "nftset=/$i/#ip#mpnet#mproxy_skip" >>$file
        else
            echo "ipset=/$i/mproxy_skip" >>$file
@@ -609,7 +612,7 @@ set_proxy() {
         udp_route_ips="$(echo "$udp_route_ips"|sed 's/,::\/0//g'|sed 's/::\/0,//g'|sed 's/::\/0//g')"
     }
  
-    if [ -e "/usr/sbin/nft" ];then
+    if [ "${use_fw4}" = '1' ];then
         gen_nft_script "$servers" "$tcp_route_ips" "$udp_route_ips" "$udp_global_proto" "$tcptun_is_exist" "$2" "$3"
         set_dns
         nft -f /var/run/mptun.nft
@@ -684,7 +687,7 @@ mptun_init() {
 clean_proxy() {
     #rm  /etc/nftables.d/mptcp-proxy.nft 2>/dev/null
     /usr/bin/proxy-route.sh "clean" 2>/dev/null
-    if [ -e "/usr/sbin/nft" ];then
+    if [ "${use_fw4}" = '1' ];then
         nft delete table ip mpnet 2>/dev/null
     else
         local IPTW="iptables -w 5"
