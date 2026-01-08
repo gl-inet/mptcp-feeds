@@ -1244,30 +1244,22 @@ function M.report_event_to_mptun(params)
             local is_enable = IPRB_is_enabled() or false
             if is_enable then
                 local c = uci.cursor()
-                local identity = c:get("mptun", "IPRB", "identity") or ''
-                if identity == 'primary' then
-                    __pause_service()
-                elseif identity == 'secondary' then
-                    __pause_connect()
-                end
-                local opt = {}
-                opt.need_revive = "1"
-                set_IPRB_option(opt)
+                -- stop mptun
+                ngx.timer.at(2.0, function()
+                    ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
+                end)
             end
         elseif code == 10 then
             -- code 10 is cloud service restored.
             local c = uci.cursor()
             local service_mode = c:get("mptun", "global", "service_mode") or ''
             local identity = c:get("mptun", "IPRB", "identity") or ''
-            local need_revive = c:get("mptun", "IPRB", "need_revive") == '1'
-            if service_mode == "IPRB" and need_revive == true then
+            if service_mode == "IPRB" then
                 if identity == 'primary' then
                     __start_service()
                 elseif identity == 'secondary' then
                     __start_connect()
                 end
-                c:delete("mptun", "IPRB", "need_revive")
-                c:commit("mptun")
             end
         end
     end
