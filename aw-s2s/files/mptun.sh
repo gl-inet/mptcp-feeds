@@ -192,6 +192,10 @@ set_firewall()
     local use_exit=$(uci -q get mptun.global.use_exit)
     local i=0
 
+    local if_ip_addr_list=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.address")
+    if_ip_addr_list="$(echo "$if_ip_addr_list" | sed 's/[，,]/ /g; s/[[:space:]]\+/ /g')"
+    local v4_addr_list="$(echo "$if_ip_addr_list" | tr ' ' '\n' | sed 's#/.*##' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')"
+
     localips=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.allowedSrc")
     exitnode=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.exitNode")
     type=$(jsonfilter -i $cfg -q -e "@.type")
@@ -308,6 +312,9 @@ set_firewall()
         if [ "${service_mode}" = 'IPRB' ] ;then
             uci -q delete firewall.mptun_local_rule.proto
             uci add_list firewall.mptun_local_rule.proto='icmp'
+            for addr in "$v4_addr_list" ;do
+                uci add_list firewall.mptun_local_rule.dest_ip="$addr"
+            done
         fi
     fi
 
