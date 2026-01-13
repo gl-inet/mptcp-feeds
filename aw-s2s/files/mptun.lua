@@ -652,6 +652,7 @@ local function __get_IPRB_status(params)
     status.lastConnectedTime = c:get("mptun", "IPRB", "lastConnectedTime") or ''
 
     status.be_kicked_out = c:get("mptun", "IPRB", "be_kicked_out") or '0'
+    status.is_p2p = c:get("mptun", "IPRB", "is_p2p") or '0'
     local state = c:get("mptun", "IPRB", "state") or 'connecting'
     if state ~= 'connected' then
         state = "connecting"
