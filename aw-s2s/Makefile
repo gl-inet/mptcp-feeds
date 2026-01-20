@@ -34,6 +34,9 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/wireguard/
 	$(INSTALL_BIN) ./files/mptun_wg_if_event.sh $(1)/etc/hotplug.d/wireguard/
 
+	$(INSTALL_DIR) $(1)/usr/share/gl-validator.d
+	$(STAGING_DIR_HOSTPKG)/bin/luac -o $(1)/usr/share/gl-validator.d/mptun.lua ./files/validator.lua
+
 	$(INSTALL_DIR) $(1)/lib/functions/
 	$(INSTALL_BIN) $(CURDIR)/files/mptun.sh $(1)/lib/functions/
 

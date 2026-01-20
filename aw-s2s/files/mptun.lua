@@ -26,7 +26,10 @@ local req_path = {
     ["req_second_rename"] = "/sdwan/sdk-iprb/v1/network/secondary/rename",
     ["req_use_exit"] = "/sdwan/sdk-iprb/v1/device/useInternetExit",
     ["req_get_pay_url"] = "/sdwan/sdk-iprb/v1/pay/url",
-    ["req_reset"] = "/sdwan/sdk-iprb/v1/device/network/reset"
+    ["req_reset"] = "/sdwan/sdk-iprb/v1/device/network/reset",
+    ["req_order_alerts"] = "/sdwan/sdk-iprb/v1/device/order/alerts",
+    ["req_order_pageList"] = "/sdwan/sdk-iprb/v1/device/order/pageList",
+    ["req_order_alerts_dismiss"] = "/sdwan/sdk-iprb/v1/device/order/alerts/dismiss"
 }
 local valid_req_path = {
     [req_path["req_get_identity"]] = true,
@@ -40,7 +43,10 @@ local valid_req_path = {
     [req_path["req_second_rename"]] = true,
     [req_path["req_use_exit"]] = true,
     [req_path["req_get_pay_url"]] = true,
-    [req_path["req_reset"]] = true
+    [req_path["req_reset"]] = true,
+    [req_path["req_order_alerts"]] = true,
+    [req_path["req_order_pageList"]] = true,
+    [req_path["req_order_alerts_dismiss"]] = true
 }
 
 local valid_req_header = {
@@ -59,6 +65,7 @@ local valid_req_method = {
 local valid_query_and_body_params = {
     ["dynamicCode"] = "^%w+$",
     ["networkId"] = "^%w+$",
+    ["sort"] = "^[%w%_%-%,]+$",
 
     ["DEFAULT"] = "^[%w%_%-]+$"
 }
@@ -99,7 +106,7 @@ end
 -- validate_func: check query params and body params
 local function check_params_valid(params, checkfunc)
     local function check(key, value)
-        if value ~= nil then
+        if value == nil then
             return true
         end
         local t = type(value)
@@ -107,15 +114,22 @@ local function check_params_valid(params, checkfunc)
             return checkfunc(key, value)
         elseif t == "table" then
             for k, v in pairs(value) do
-                return check(k, v)
+                local ret = true
+                local real_k = k
+                if type(k) == 'number' then
+                    real_k = key
+                end
+                if check(real_k, v) == false then
+                    return false
+                end
             end
         end
         return true
     end
-    if params ~= nil then
+    if params == nil then
         return true
     end
-    if checkfunc ~= nil then
+    if checkfunc == nil then
         return false
     end
     return check(nil, params)
@@ -538,7 +552,16 @@ local function __raw_request(params)
         local append_url = ''
         for k, v in pairs(query_params) do
             if k and v then
-                append_url = string.format('%s&%s=%s', append_url, tostring(k), tostring(v))
+                if type(v) == 'table' then
+                    for per_k, per_v in pairs(v) do
+                        if type(per_k) ~= 'number' then
+                            return { err_code = -6, err_msg = 'method GET invalid param array.' }
+                        end
+                        append_url = string.format('%s&%s=%s', append_url, tostring(k), tostring(per_v))
+                    end
+                else
+                    append_url = string.format('%s&%s=%s', append_url, tostring(k), tostring(v))
+                end
             end
         end
         if append_url ~= '' then
