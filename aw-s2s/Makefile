@@ -32,7 +32,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/etc/init.d/
 	$(INSTALL_BIN) $(CURDIR)/files/mptun.init $(1)/etc/init.d/mptun
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/wireguard/
-	$(INSTALL_BIN) ./files/if_event.sh $(1)/etc/hotplug.d/wireguard/
+	$(INSTALL_BIN) ./files/mptun_wg_if_event.sh $(1)/etc/hotplug.d/wireguard/
 
 	$(INSTALL_DIR) $(1)/lib/functions/
 	$(INSTALL_BIN) $(CURDIR)/files/mptun.sh $(1)/lib/functions/

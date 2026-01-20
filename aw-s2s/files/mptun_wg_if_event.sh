@@ -5,6 +5,8 @@
 . /lib/functions/gl_util.sh
 . /lib/functions/mptun.sh
 
+[ -n "$(echo "${ifname}" | grep "^mptun")" ] || exit 0
+
 MPTUN_CONFIG="/etc/mptun/mpnet.json"
 
 LOCKFILE=/tmp/run/iprb_wg_event.lock
