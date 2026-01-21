@@ -151,11 +151,13 @@ local function set_IPRB_option(opt)
     end
 
     c:set("mptun", "IPRB", "service_instance")
-    for k, v in pairs(opt) do
-        if v and tostring(v) ~= '' then
-            local old_v = c:get("mptun", "IPRB", tostring(k)) or " "
-            if tostring(old_v) ~= tostring(v) then
-                c:set("mptun", "IPRB", tostring(k), tostring(v))
+    if type(opt) == 'table' then
+        for k, v in pairs(opt) do
+            if v and tostring(v) ~= '' then
+                local old_v = c:get("mptun", "IPRB", tostring(k)) or " "
+                if tostring(old_v) ~= tostring(v) then
+                    c:set("mptun", "IPRB", tostring(k), tostring(v))
+                end
             end
         end
     end
@@ -535,9 +537,9 @@ local function __raw_request(params)
         ["content-type"] = 'application/json'
     }
     -- check and set custom headers
-    if append_header and #append_header > 0 then
+    if append_header and type(append_header) == 'table' and #append_header > 0 then
         for k, v in pairs(append_header) do
-            if k and valid_req_header[string.lower(tostring(k))] and v and valid_req_header_value[v] then
+            if k and type(k) == 'string' and valid_req_header[string.lower(tostring(k))] and v and valid_req_header_value[v] then
                 req_header[k] = v
             end
         end
@@ -550,17 +552,19 @@ local function __raw_request(params)
     if req_method == 'GET' then
         -- set custom query_params
         local append_url = ''
-        for k, v in pairs(query_params) do
-            if k and v then
-                if type(v) == 'table' then
-                    for per_k, per_v in pairs(v) do
-                        if type(per_k) ~= 'number' then
-                            return { err_code = -6, err_msg = 'method GET invalid param array.' }
+        if type(query_params) == 'table' then
+            for k, v in pairs(query_params) do
+                if k and v then
+                    if type(v) == 'table' then
+                        for per_k, per_v in pairs(v) do
+                            if type(per_k) ~= 'number' then
+                                return { err_code = -6, err_msg = 'method GET invalid param array.' }
+                            end
+                            append_url = string.format('%s&%s=%s', append_url, tostring(k), tostring(per_v))
                         end
-                        append_url = string.format('%s&%s=%s', append_url, tostring(k), tostring(per_v))
+                    else
+                        append_url = string.format('%s&%s=%s', append_url, tostring(k), tostring(v))
                     end
-                else
-                    append_url = string.format('%s&%s=%s', append_url, tostring(k), tostring(v))
                 end
             end
         end
@@ -571,8 +575,12 @@ local function __raw_request(params)
     elseif req_method == 'POST' then
         -- set custom body
         local body = {}
-        for k, v in pairs(req_body) do
-            body[k] = v
+        if type(req_body) == 'table' then
+            for k, v in pairs(req_body) do
+                if v ~= nil and type(k) == 'string' then
+                    body[k] = v
+                end
+            end
         end
         opt.method = "POST"
         opt.body = cjson.encode(body)
