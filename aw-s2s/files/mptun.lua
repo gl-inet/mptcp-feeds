@@ -73,6 +73,34 @@ local valid_query_and_body_params = {
 local snoop_func = {}
 local pre_req_func = {}
 
+local function vpn_is_tap_s2s()
+    local rpc_ret = ubus.call("gl-session", "call", { module = "vpn-client", func = "get_status", params = {} })
+    if rpc_ret ~= nil and rpc_ret.result ~= nil and type(rpc_ret.result) == 'table' and rpc_ret.result.status_list ~= nil and type(rpc_ret.result.status_list) == 'table' then
+        for _, v in pairs(rpc_ret.result.status_list) do
+            if v ~= nil and v.type ~= nil and type(v.type) == 'string' and v.type == 'tap-s2s' then
+                if v.enabled ~= nil and type(v.enabled) == 'boolean' and v.enabled == true then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function is_valid_netmode()
+    local c = uci.cursor()
+    return c:get("glconfig", "general", "mode") == 'router'
+end
+
+local function __is_meet_startup_conditions()
+    if vpn_is_tap_s2s() == true then
+        return false
+    end
+    if is_valid_netmode() == false then
+        return false
+    end
+    return true
+end
 local function check_req_header(k, v)
     if not k and not v then
         return true
@@ -771,6 +799,9 @@ local function send_net_ctrl_msg(active)
 end
 
 local function __start_service(params)
+    if __is_meet_startup_conditions() == false then
+        return { err_code = -4, err_msg = "Startup conditions not met !" }
+    end
     local resp = send_net_ctrl_msg('start')
     if resp == nil or resp.err_code ~= 0 then
         return { err_code = -1, err_msg = "communicate fail !" }
@@ -843,6 +874,9 @@ function M.pause_service(params)
     return __pause_service(params)
 end
 local function __start_connect(params)
+    if __is_meet_startup_conditions() == false then
+        return { err_code = -3, err_msg = "Startup conditions not met !" }
+    end
     local resp = send_net_ctrl_msg('start')
     if resp == nil or resp.err_code ~= 0 then
         return { err_code = -1, err_msg = "communicate fail !" }
@@ -1298,6 +1332,22 @@ function M.report_event_to_mptun(params)
     return {}
 end
 
+--[[
+    @method-type: call
+    @method-name: is_meet_startup_conditions
+    @method-desc: Check if the startup conditions are met..
+    @out err_code.
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "is_meet_startup_conditions"]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {} }
+--]]
+function M.is_meet_startup_conditions()
+    local ret = __is_meet_startup_conditions()
+    if ret == true then
+        return {}
+    else
+        return { err_code = -1 }
+    end
+end
 pre_req_func[req_path["req_get_identity"]] = pre_req_deal_identity_verification
 snoop_func[req_path["req_get_identity"]] = snoop_response_identity_verification
 snoop_func[req_path["req_access_by_code"]] = snoop_response_access_by_code
