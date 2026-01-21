@@ -742,6 +742,31 @@ function M.get_IPRB_status(params)
     return ret
 end
 
+--[[
+    @method-type: call
+    @method-name: get_AW_status
+    @method-desc: get_AW_status.
+    @out err_code.
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_AW_status",{}]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": { "enabled": true, mode: "IPRB", "status": {...}}}}
+--]]
+function M.get_AW_status(params)
+    local IPRB_status = __get_IPRB_status()
+    local c = uci.cursor()
+    local current_mode = c:get("mptun", "global", "service_mode")
+    local global_enabled = c:get("mptun", "global", "enable") == '1'
+    local ret = {}
+    if current_mode == 'IPRB' then
+        ret.enabled = (IPRB_status.status.enabled == '1')
+        ret.mode = current_mode
+        ret.status = IPRB_status.status
+    else
+        ret.enabled = global_enabled
+        ret.mode = 'classic'
+        ret.status = { enable = global_enabled }
+    end
+    return ret
+end
 local function get_network_id()
     local c = uci.cursor()
     local net_id = c:get("mptun", "IPRB", "net_id")
