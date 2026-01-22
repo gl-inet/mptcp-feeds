@@ -757,7 +757,7 @@ function M.get_AW_status(params)
     local global_enabled = c:get("mptun", "global", "enable") == '1'
     local ret = {}
     if current_mode == 'IPRB' then
-        ret.enabled = (IPRB_status.status.enabled == '1')
+        ret.enabled = (IPRB_status.status.enabled == '1' and global_enabled == true)
         ret.mode = current_mode
         ret.status = IPRB_status.status
     else
@@ -1336,6 +1336,8 @@ function M.report_event_to_mptun(params)
             if is_enable then
                 local c = uci.cursor()
                 -- stop mptun
+                c:set("mptun", "global", "enable", "0")
+                c:commit("mptun")
                 ngx.timer.at(2.0, function()
                     ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
                 end)
