@@ -58,19 +58,28 @@ IPRB_update_p2p_status() {
 
     local default_pub="$(get_default_pub)"
     local current_pub="$(get_current_pub)"
+    local old_p2p_status="$(uci -q get mptun.IPRB.is_p2p)"
+    local current_p2p_status='0'
+
+    [ -z "${old_p2p_status}" ] && old_p2p_status='0'
 
     if [ -n "$default_pub" -a -n "$current_pub" -a "$default_pub" != "$current_pub" ] ;then
         if [ "$peerpubkey" = "$current_pub" ] ;then
             if [ "${ACTION}" = "KEYPAIR-CREATED" ] ;then
-                uci -q set mptun.IPRB.is_p2p='1'
+                current_p2p_status='1'
             else
-                uci -q set mptun.IPRB.is_p2p='0'
+                current_p2p_status='0'
             fi
         fi
     else
-        uci -q set mptun.IPRB.is_p2p='0'
+        current_p2p_status='0'
     fi
-    uci commit mptun
+
+    [ "${old_p2p_status}" != "${current_p2p_status}" ] && {
+        uci -q set mptun.IPRB.is_p2p="${current_p2p_status}"
+        uci commit mptun
+        notify_IPRB_status
+    }
 }
 
 [ "${IPRB_identity}" = "secondary" ] && IPRB_update_p2p_status
