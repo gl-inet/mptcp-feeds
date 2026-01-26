@@ -11,8 +11,7 @@ service_mode="$(uci -q get mptun.global.service_mode)"
 IPRB_identity="$(uci -q get mptun.IPRB.identity)"
 
 notify_IPRB_status() {
-    local status="$(curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","get_IPRB_status",{}]}'| jsonfilter -e '@.result')"
-    ubus call gl-session notify "{\"name\": \"mptun.IPRB_status\", \"data\":$status}"
+    $(curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","push_IPRB_status_to_wb",{}]}')
 }
 
 gateway_set_tcptun() {

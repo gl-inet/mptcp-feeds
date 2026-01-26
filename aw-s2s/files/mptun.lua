@@ -733,6 +733,19 @@ local function push_status_to_wb()
 end
 --[[
     @method-type: call
+    @method-name: push_IPRB_status_to_wb
+    @method-desc: push IPRB status to websocket.
+    @out err_code.
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "push_IPRB_status_to_wb",{}]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": { }}
+--]]
+function M.push_IPRB_status_to_wb(params)
+    push_status_to_wb()
+    return {}
+end
+
+--[[
+    @method-type: call
     @method-name: get_IPRB_status
     @method-desc: get IPRB status.
     @out err_code.
