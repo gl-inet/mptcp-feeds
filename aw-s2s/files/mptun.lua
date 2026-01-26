@@ -502,7 +502,7 @@ end
 
 local function __raw_request(params)
     local c = uci.cursor()
-    local base_url = c:get("mptun", "global", "base_url") or nil
+    local base_url = c:get("mptun", "global", "base_url") or 'https://api.astrowarp.net'
     if not base_url then
         return { err_code = -6, err_msg = 'invalid base_url.' }
     end
@@ -618,22 +618,24 @@ local function __raw_request(params)
     httpc:set_timeout(15000)
 
     local resp, err = httpc:request_uri(url, opt)
-    local debug_info = {
-        url = url,
-        req_body = opt.body,
-        req_header = req_header
-    }
-    --utils.writefile("/tmp/http_debug_info.log", cjson.encode(debug_info))
-    local f_deb = io.open("/tmp/http_debug_info.log", "a")
-    if resp ~= nil then
-        if resp.status ~= nil and resp.body ~= nil then
-            debug_info.resp_status = resp.status
-            debug_info.resp_body = resp.body
+    local need_debug = c:get("mptun", "global", "debug") == '1'
+    if need_debug == true then
+        local debug_info = {
+            url = url,
+            req_body = opt.body,
+            req_header = req_header
+        }
+        local f_deb = io.open("/tmp/http_debug_info.log", "a")
+        if resp ~= nil then
+            if resp.status ~= nil and resp.body ~= nil then
+                debug_info.resp_status = resp.status
+                debug_info.resp_body = resp.body
+            end
         end
-    end
-    if f_deb ~= nil then
-        f_deb:write(cjson.encode(debug_info) .. '\n')
-        f_deb:close()
+        if f_deb ~= nil then
+            f_deb:write(cjson.encode(debug_info) .. '\n')
+            f_deb:close()
+        end
     end
     if err ~= nil then
         return { err_code = -4, err_msg = tostring(err) }
