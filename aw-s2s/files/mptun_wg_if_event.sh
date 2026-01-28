@@ -100,7 +100,7 @@ if [ "${ACTION}" = "KEYPAIR-CREATED" -a -n "$(echo "${ifname}" | grep "^mptun")"
     # unlock
     rm -f $LOCKFILE
 
-    [ "${active_num}" -ne 0 ] && return
+    [ "${active_num}" -ne 0 -a "$(uci -q get mptun.IPRB.state)" = "connected" ] && return
 
     con_time="$(date +%s)"
     uci -q set mptun.IPRB.state="connected"
