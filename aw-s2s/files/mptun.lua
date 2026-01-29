@@ -654,9 +654,12 @@ end
     @method-type: call
     @method-name: raw_request
     @method-desc: The front-end interacts with the cloud through this interface.
-    @out Raw data returned from the cloud.
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "raw_request",{"req_method":'POST',"req_path":"/sdwan/sdk-iprb/v1/device/client","query_params": [],"req_body":{"clientKey": "string",}}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {......}}
+    @out number     status_code         http status code
+    @out string     body                http response body
+    @out number     ?err_code           Error Code
+    @out string     ?err_msg            Error Message
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "raw_request",{"req_method":'POST',"req_path":"/sdwan/sdk-iprb/v1/device/client","query_params": [],"req_body":[]}]}
+    @out-example: {"id":1,"jsonrpc":"2.0","result":{"status_code":200,"body":"{\"code\":0,\"msg\":\"Success\",\"info\":{\"networkId\":\"e594229d6ed40a19cc23b81c6da999cb\",\"networkPlan\":\"IPRB_PLUS\",\"planCode\":\"008\",\"primaryDevice\":false,\"networkStatus\":1,\"enableStatus\":true,\"useInternetExit\":true,\"latestAccessTime\":1769677787124}}"}}
 --]]
 function M.raw_request(raw_params)
     local res = __raw_request(raw_params)
@@ -735,7 +738,6 @@ end
     @method-type: call
     @method-name: push_IPRB_status_to_wb
     @method-desc: push IPRB status to websocket.
-    @out err_code.
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "push_IPRB_status_to_wb",{}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": { }}
 --]]
@@ -747,10 +749,18 @@ end
 --[[
     @method-type: call
     @method-name: get_IPRB_status
-    @method-desc: get IPRB status.
-    @out err_code.
+    @method-desc: Obtain IPRB mode related status information.
+    @out string     status.enabled                  enabled or not
+    @out string     status.identity                 identity: primary or secondary or null
+    @out string     status.state                    state: connecting or connected
+    @out string     status.attempt_to_be            primary or secondary or null. The role temporarily selected by the user on the initial page, will be replaced by the identity field after the actual role is confirmed.
+    @out string     status.be_kicked_out            for secondary, be kicked out or not
+    @out string     status.is_p2p                   Indicates whether a p2p connection has been established.
+    @out string     status.lastConnectedTime        Timestamp of the last successful tunnel establishment.
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_IPRB_status",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": { "status: {"enable": "1", state: "connected", "lastConnectedTime": "1764380171", "attempt_to_be": "primary"}}}
+    @out-example: {"id":15,"jsonrpc":"2.0","result":{"status":{"lastConnectedTime":"1769678361","is_p2p":"0","be_kicked_out":"0","attempt_to_be":"secondary","state":"connected","identity":"secondary","enabled":"1"}}}
 --]]
 function M.get_IPRB_status(params)
     local ret = __get_IPRB_status()
@@ -760,10 +770,14 @@ end
 --[[
     @method-type: call
     @method-name: get_AW_status
-    @method-desc: get_AW_status.
-    @out err_code.
+    @method-desc: Get partial local status information of the current AW service.
+    @out bool       enabled                 Is the AW function actually enabled or not
+    @out string     mode                    Current mode: IPRB or classic
+    @out object     status                  State information of each mode
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_AW_status",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": { "enabled": true, mode: "IPRB", "status": {...}}}}
+    @out-example: {"id":15,"jsonrpc":"2.0","result":{"enabled":true,"mode":"IPRB","status":{"lastConnectedTime":"1769681084","is_p2p":"0","be_kicked_out":"0","attempt_to_be":"secondary","state":"connected","identity":"secondary","enabled":"1"}}}
 --]]
 function M.get_AW_status(params)
     local IPRB_status = __get_IPRB_status()
@@ -877,7 +891,8 @@ end
     @method-type: call
     @method-name: start_service
     @method-desc: start mptun primary side service.
-    @out err_code.
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "start_service",{}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
@@ -906,7 +921,8 @@ end
     @method-type: call
     @method-name: pause_service
     @method-desc: stop mptun primary side service.
-    @out err_code.
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "pause_service",{}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
@@ -952,7 +968,8 @@ end
     @method-type: call
     @method-name: start_connect
     @method-desc: start mptun second side connections.
-    @out err_code.
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "start_connect",{}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
@@ -981,7 +998,8 @@ end
     @method-type: call
     @method-name: pause_connect
     @method-desc: stop mptun second side connections.
-    @out err_code.
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "pause_connect",{}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
@@ -993,7 +1011,9 @@ end
     @method-type: call
     @method-name: set_use_exit_node
     @method-desc: sencond side set use exit node or not.
-    @out err_code.
+    @in bool        enabled     use exit node or not
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "set_use_exit_node",{"enabled": true}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
@@ -1047,8 +1067,9 @@ end
     @method-type: call
     @method-name: rest
     @method-desc: reset configuration.
-    @out err_code.
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "reset",{"enabled": true}]}
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "reset",{}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.reset(params)
@@ -1085,7 +1106,9 @@ end
     @method-type: call
     @method-name: get_started
     @method-desc: Select a role and begin the relevant process.
-    @out err_code.
+    @in bool        attempt_to_be       The role want to set
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_started",{"attempt_to_be": "primary"}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
@@ -1112,7 +1135,8 @@ end
     @method-type: call
     @method-name: clean_kicked_out_status
     @method-desc: clean option be_kicked_out.
-    @out err_code.
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "clean_kicked_out_status",{}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
@@ -1304,9 +1328,14 @@ end
     @method-type: call
     @method-name: get_node_info
     @method-desc: get device identity for cloud.
-    @out err_code.
+    @out string     info.identity       currently identity
+    @out string     info.active         cloud allow enabling or not
+    @out string     info.use_exit       for secondary, use exit node or not
+    @out string     ?info.net_id         id of this network
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_node_info",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": { "info: {err_code = 0,identity = tostring(identity),active = tostring(active),net_id = tostring(net_id),use_exit = tostring(use_exit)}}}
+    @out-example: {"id":15,"jsonrpc":"2.0","result":{"info":{"use_exit":"0","active":"1","err_code":0,"identity":"primary","net_id":"7c3e7da5dc2413e8e8ff7f6bdde31cab"}}}
 --]]
 function M.get_node_info(params)
     local ret = nil
@@ -1327,10 +1356,14 @@ function M.get_node_info(params)
 end
 --[[
     @method-type: call
-    @method-name: get_node_info
-    @method-desc: get device identity for cloud.
-    @out err_code.
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "report_event_to_mptun",{"class": "cloud", "msg": "cloud service is closed", "info":{ ... }}]}
+    @method-name: report_event_to_mptun
+    @method-desc: The mptun module is notified that certain events have occurred.
+    @in string      class       Event Type
+    @in string      msg         Brief description of the event
+    @in object      info        Detailed information about the relevant events
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "report_event_to_mptun",{"class":"cloud","msg":"cloud service closed","info":{"event_code":11}}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {} }
 --]]
 function M.report_event_to_mptun(params)
@@ -1378,7 +1411,8 @@ end
     @method-type: call
     @method-name: is_meet_startup_conditions
     @method-desc: Check if the startup conditions are met..
-    @out err_code.
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "is_meet_startup_conditions"]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {} }
 --]]
