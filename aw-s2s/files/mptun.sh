@@ -1,9 +1,18 @@
 TYPE="EDGE"
 DEBUG_SERVER="$(cat /etc/mptun/debugip 2>/dev/null)"
 listenPort=""
+AW_P2P_PORT='58080'
 
 use_fw4='0'
 [ -n "$(which fw4)" ] && use_fw4='1'
+
+service_mode="$(uci -q get mptun.global.service_mode)"
+[ "${service_mode}" = '' ] && service_mode='classic'
+IPRB_identity="$(uci -q get mptun.IPRB.identity)"
+
+notify_IPRB_status() {
+    $(curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","push_IPRB_status_to_wb",{}]}')
+}
 
 gateway_set_tcptun() {
     local port key
@@ -90,9 +99,12 @@ EOF
 
 format_udp_cfg() {
     local FILE="$2"
+    local proto_type="$3"
     local interface="$(jsonfilter -q -i $1 -e  '@.udpTun.interface')"
     local peers="$(jsonfilter -q -i $1 -e  '@.udpTun.peers')"
     [ -z "$interface" -o -z "$peers" ] && return 1
+
+    local awg_params="$(jsonfilter -q -i $1 -e '@.udpTun.awgParams' | tr -d '{}"' | tr ',' '\n' | sed 's/:/ = /')"
 
     eval $(echo $interface|jsonfilter -q -e 'address=@.address' -e 'privateKey=@.privateKey')
     eval $(echo $interface|jsonfilter -q -e 'listenPort=@.listenPort')
@@ -101,6 +113,9 @@ cat >$FILE <<EOF
 privateKey=$privateKey
 ${listenPort:+listenPort=$listenPort}
 EOF
+
+    [ "${proto_type}" = 'amneziawg' ] && echo "${awg_params:+$awg_params}" >>$FILE
+
     local i=0
     while true;do
         local peer=$(echo $peers|jsonfilter -q -e "@[$i]")
@@ -124,17 +139,36 @@ EOF
 }
 
 set_udptun() {
+    local WG_TOOL='/usr/bin/wg'
+    local proto_type='wireguard'
     local TMPFILE="/var/run/mpudp.cfg"
     local MTU="$(jsonfilter -q -i $1 -e  '@.udpTun.interface.mtu')"
     local Address="$(jsonfilter -q -i $1 -e  '@.udpTun.interface.address')"
     local DEV=$2
     local MARK=$3
 
-    format_udp_cfg "$1" "${TMPFILE}" || return 1
+    case "${service_mode}" in
+        "IPRB")
+                WG_TOOL="/usr/bin/awg"
+                proto_type="amneziawg"
+            ;;
+        *)
+            WG_TOOL="/usr/bin/wg"
+            proto_type="wireguard"
+        ;;
+    esac
+
+    format_udp_cfg "$1" "${TMPFILE}" "${proto_type}" || return 1
     ip link del dev "${DEV}" 2>/dev/null
-    ip link add dev "${DEV}" type wireguard
+    ip link add dev "${DEV}" type "$proto_type"
     [ -n "$MTU" ] && ip link set mtu "$MTU" "${DEV}" 
-    wg setconf "${DEV}" "${TMPFILE}" || return 1
+    $WG_TOOL setconf "${DEV}" "${TMPFILE}" || return 1
+    [ "${service_mode}" = "IPRB" ] && {
+        uci set mptun.IPRB.state="connecting"
+        uci -q delete mptun.IPRB.lastConnectedTime
+        uci commit mptun
+        notify_IPRB_status
+    }
     ip address add dev "${DEV}" "${Address}" || return 1
     ip link set up dev "${DEV}" || return 1
 
@@ -153,13 +187,18 @@ set_firewall()
 {
     local cfg="$1"
     local DEV="$2"
-    local srcips destips localips exitnode type
+    local srcips destips localips exitnode type enable_p2p
     local use_exit=$(uci -q get mptun.global.use_exit)
     local i=0
+
+    local if_ip_addr_list=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.address")
+    if_ip_addr_list="$(echo "$if_ip_addr_list" | sed 's/[，,]/ /g; s/[[:space:]]\+/ /g')"
+    local v4_addr_list="$(echo "$if_ip_addr_list" | tr ' ' '\n' | sed 's#/.*##' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')"
 
     localips=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.allowedSrc")
     exitnode=$(jsonfilter -i $cfg -q -e "@.udpTun.interface.exitNode")
     type=$(jsonfilter -i $cfg -q -e "@.type")
+    enable_p2p=$(jsonfilter -i $cfg -q -e "@.enableP2p")
 
     while true;do
             local client=$(jsonfilter -i $cfg -q -e "@.udpTun.clients[$i]")
@@ -188,44 +227,75 @@ set_firewall()
     uci set firewall.lan2mptun.src='lan'
     uci set firewall.lan2mptun.dest='mptun'
 
+    [ "${service_mode}" = "IPRB" ] && {
+        uci set firewall.guest2mptun=forwarding
+        uci set firewall.guest2mptun.src='guest'
+        uci set firewall.guest2mptun.dest='mptun'
+    }
+
+    # IPRB mode, as the primary, allows DNS.
+    if [ "${service_mode}" = 'IPRB' -a "${IPRB_identity}" = 'primary' ] ;then
+        uci set firewall.mptun_allowe_dns=rule
+        uci set firewall.mptun_allowe_dns.name='mptun allowe dns'
+        uci set firewall.mptun_allowe_dns.src="mptun"
+        uci set firewall.mptun_allowe_dns.proto='tcp udp'
+        uci set firewall.mptun_allowe_dns.dest_port='53'
+        uci set firewall.mptun_allowe_dns.target='ACCEPT'
+    fi
+
+    if [ "${service_mode}" = 'IPRB' -a "${enable_p2p}" = 'true' ] ;then
+        uci set firewall.mptun_allowe_aw_p2p=rule
+        uci set firewall.mptun_allowe_aw_p2p.name='mptun allowe aw p2p'
+        uci set firewall.mptun_allowe_aw_p2p.src="mptun"
+        uci set firewall.mptun_allowe_aw_p2p.proto='tcp udp'
+        uci set firewall.mptun_allowe_aw_p2p.dest_port="${AW_P2P_PORT}"
+        uci set firewall.mptun_allowe_aw_p2p.target='ACCEPT'
+    fi
+
     uci set firewall.mptun_local_rule=rule
     uci set firewall.mptun_local_rule.name='mptun local rule'
     uci set firewall.mptun_local_rule.src="mptun"
     uci -q delete firewall.mptun_local_rule.proto
     uci add_list firewall.mptun_local_rule.proto='all'
 
-    uci set firewall.mptun_forward_rule=rule
-    uci set firewall.mptun_forward_rule.name='mptun forward rule'
-    uci set firewall.mptun_forward_rule.src="mptun"
-    uci set firewall.mptun_forward_rule.dest="*"
-    uci -q delete firewall.mptun_forward_rule.proto
-    uci add_list firewall.mptun_forward_rule.proto="all"
-    uci set firewall.mptun_forward_rule.target="ACCEPT"
+    # Forwarding is not allowed by default in IPRB mode.
+    if [ "${service_mode}" != 'IPRB' ] ;then
+        uci set firewall.mptun_forward_rule=rule
+        uci set firewall.mptun_forward_rule.name='mptun forward rule'
+        uci set firewall.mptun_forward_rule.src="mptun"
+        uci set firewall.mptun_forward_rule.dest="*"
+        uci -q delete firewall.mptun_forward_rule.proto
+        uci add_list firewall.mptun_forward_rule.proto="all"
+        uci set firewall.mptun_forward_rule.target="ACCEPT"
+    fi
 
-    local rule_target="accept"
-    if [ "${use_fw4}" = '1' ]; then
-        [ -z "$srcips" -o -z "$destips" ] && rule_target="drop"
-    else
-        uci set firewall.mptun_subnet_rule=rule
-        uci set firewall.mptun_subnet_rule.name='mptun subnet rule'
-        uci set firewall.mptun_subnet_rule.src="mptun"
-        uci set firewall.mptun_subnet_rule.dest='*'
-        uci -q delete firewall.mptun_subnet_rule.proto
-        uci add_list firewall.mptun_subnet_rule.proto='all'
-        uci -q delete firewall.mptun_subnet_rule.src_ip
-        for i in $srcips;do
-            uci add_list firewall.mptun_subnet_rule.src_ip="$i"
-        done
-        #uci -q delete firewall.mptun_subnet_rule.dest_ip
-        uci -q delete firewall.mptun_subnet_rule.extra
-        for i in $destips;do
-            uci set firewall.mptun_subnet_rule.extra='-i mptun+ -m conntrack --ctstate DNAT'
-            #uci add_list firewall.mptun_subnet_rule.dest_ip="$i"
-        done
-        if [ -z "$srcips" -o -z "$destips" ];then
-            uci set firewall.mptun_subnet_rule.target='DROP'
+    # DNAT does not exist in IPRB mode.
+    if [ "${service_mode}" != 'IPRB' ] ;then
+        local rule_target="accept"
+        if [ "${use_fw4}" = '1' ]; then
+            [ -z "$srcips" -o -z "$destips" ] && rule_target="drop"
         else
-            uci set firewall.mptun_subnet_rule.target='ACCEPT'
+            uci set firewall.mptun_subnet_rule=rule
+            uci set firewall.mptun_subnet_rule.name='mptun subnet rule'
+            uci set firewall.mptun_subnet_rule.src="mptun"
+            uci set firewall.mptun_subnet_rule.dest='*'
+            uci -q delete firewall.mptun_subnet_rule.proto
+            uci add_list firewall.mptun_subnet_rule.proto='all'
+            uci -q delete firewall.mptun_subnet_rule.src_ip
+            for i in $srcips;do
+                uci add_list firewall.mptun_subnet_rule.src_ip="$i"
+            done
+            #uci -q delete firewall.mptun_subnet_rule.dest_ip
+            uci -q delete firewall.mptun_subnet_rule.extra
+            for i in $destips;do
+                uci set firewall.mptun_subnet_rule.extra='-i mptun+ -m conntrack --ctstate DNAT'
+                #uci add_list firewall.mptun_subnet_rule.dest_ip="$i"
+            done
+            if [ -z "$srcips" -o -z "$destips" ];then
+                uci set firewall.mptun_subnet_rule.target='DROP'
+            else
+                uci set firewall.mptun_subnet_rule.target='ACCEPT'
+            fi
         fi
     fi
 
@@ -237,6 +307,14 @@ set_firewall()
         uci set firewall.mptun_local_rule.target='DROP'
     else
         uci set firewall.mptun_local_rule.target='ACCEPT'
+        # IPRB mode, just allowes icmp.
+        if [ "${service_mode}" = 'IPRB' ] ;then
+            uci -q delete firewall.mptun_local_rule.proto
+            uci add_list firewall.mptun_local_rule.proto='icmp'
+            for addr in "$v4_addr_list" ;do
+                uci add_list firewall.mptun_local_rule.dest_ip="$addr"
+            done
+        fi
     fi
 
      [ "$use_exit" = "1" ] && {
@@ -289,7 +367,11 @@ set_firewall()
     }
     uci commit firewall
     /etc/init.d/firewall reload 2>/dev/null
-    [ "${use_fw4}" = '1' ] && nft insert rule inet fw4 forward_mptun iifname "mptun0" ct status dnat counter $rule_target
+
+    # DNAT does not exist in IPRB mode.
+    if [ "${service_mode}" != 'IPRB' ] ;then
+        [ "${use_fw4}" = '1' ] && nft insert rule inet fw4 forward_mptun iifname "mptun0" ct status dnat counter $rule_target
+    fi
 }
 
 set_dns() {
@@ -716,6 +798,12 @@ clean_udptun() {
         uci -q del firewall.mptun2wan
         uci -q del firewall.dns_mptun
         uci -q del firewall.dns_mptun_guest
+
+        # clean IPRB mode-specific rules
+        uci -q del firewall.guest2mptun
+        uci -q del firewall.mptun_allowe_dns
+        uci -q del firewall.mptun_allowe_aw_p2p
+
         uci commit firewall
         /etc/init.d/firewall reload 2>/dev/null
     }
@@ -729,6 +817,12 @@ clean_udptun() {
     local DEV
     config_get DEV "global" "mptun" "mptun0"
     ip link del dev "${DEV}" 2>/dev/null
+    [ "${service_mode}" = "IPRB" ] && {
+        uci -q set mptun.IPRB.state="disconnected"
+        uci commit mptun
+        rm -rf /tmp/wireguard/"${DEV}"
+        notify_IPRB_status
+    }
 }
 
 clean_p2p_info(){

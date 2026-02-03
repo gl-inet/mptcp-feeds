@@ -22,6 +22,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_BIN) $(CURDIR)/files/proxy-route.sh $(1)/usr/bin/
 	$(INSTALL_BIN) $(CURDIR)/files/get_mplinkip.sh $(1)/usr/bin/
 	$(INSTALL_BIN) $(CURDIR)/files/get_mpsrv_delay.sh $(1)/usr/bin/
+	$(INSTALL_BIN) $(CURDIR)/files/mptun_tools.sh $(1)/usr/bin/mptun_tools
 
 	$(INSTALL_DIR) $(1)/etc/mptun/
 	$(INSTALL_DATA) $(CURDIR)/files/dnsmasq.conf.mptun $(1)/etc/
@@ -30,6 +31,11 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_CONF) $(CURDIR)/files/mptun.conf $(1)/etc/config/mptun
 	$(INSTALL_DIR) $(1)/etc/init.d/
 	$(INSTALL_BIN) $(CURDIR)/files/mptun.init $(1)/etc/init.d/mptun
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/wireguard/
+	$(INSTALL_BIN) ./files/mptun_wg_if_event.sh $(1)/etc/hotplug.d/wireguard/
+
+	$(INSTALL_DIR) $(1)/usr/share/gl-validator.d
+	$(STAGING_DIR_HOSTPKG)/bin/luac -o $(1)/usr/share/gl-validator.d/mptun.lua ./files/validator.lua
 
 	$(INSTALL_DIR) $(1)/lib/functions/
 	$(INSTALL_BIN) $(CURDIR)/files/mptun.sh $(1)/lib/functions/
@@ -37,6 +43,10 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/lib/oui-httpd/rpc
 	$(CP) $(CURDIR)/files/mptun.lua $(1)/usr/lib/oui-httpd/rpc/mptun
 	$(STAGING_DIR_HOSTPKG)/bin/luac -o $(1)/usr/lib/oui-httpd/rpc/mptun $(1)/usr/lib/oui-httpd/rpc/mptun
+
+	$(INSTALL_DIR) $(1)/usr/share/gl-ngx/websocket
+	$(CP) $(CURDIR)/files/mptun-ws.lua $(1)/usr/share/gl-ngx/websocket/mptun.lua
+	$(STAGING_DIR_HOSTPKG)/bin/luac -o $(1)/usr/share/gl-ngx/websocket/mptun.lua $(1)/usr/share/gl-ngx/websocket/mptun.lua
 
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) $(CURDIR)/files/51-aw_upgrade_compat.sh  $(1)/etc/uci-defaults

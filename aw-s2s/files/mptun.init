@@ -61,10 +61,17 @@ start_service() {
     config_load "$CONF"
 
     local enabled dev udpmark tcpmark use_exit dns
+    local service_mode IPRB_disabled
     config_get_bool enabled "global" "enable" "0"
     config_get dev "global" "mptun" "mptun0"
     config_get udpmark "global" "udpmark" "0x2"
     config_get tcpmark "global" "tcpmark" "0x1"
+
+    config_get service_mode "global" "service_mode" "classic"
+    config_get IPRB_disabled "IPRB" "disabled" "0"
+    [ "${service_mode}" = "IPRB" -a "${IPRB_disabled}" = "1" ] && {
+        return 0
+    }
 
     config_foreach update_conf interface
 
