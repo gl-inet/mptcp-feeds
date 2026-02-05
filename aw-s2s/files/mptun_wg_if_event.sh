@@ -59,7 +59,7 @@ IPRB_update_p2p_status() {
     local default_pub="$(get_default_pub)"
     local current_pub="$(get_current_pub)"
     local old_p2p_status="$(uci -q get mptun.IPRB.is_p2p)"
-    local current_p2p_status='0'
+    local current_p2p_status="${old_p2p_status}"
 
     [ -z "${old_p2p_status}" ] && old_p2p_status='0'
 
