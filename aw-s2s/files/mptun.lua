@@ -876,7 +876,6 @@ local function __start_service(params)
         local option = {}
         option.disabled = '0'
         option.identity = 'primary'
-        option.active = '1'
         set_IPRB_option(option)
 
         push_status_to_wb()
@@ -953,7 +952,6 @@ local function __start_connect(params)
         local option = {}
         option.disabled = '0'
         option.identity = 'secondary'
-        option.active = '1'
         set_IPRB_option(option)
 
         push_status_to_wb()
@@ -1151,38 +1149,32 @@ end
 local function pre_req_deal_identity_verification(req_path, params)
     local c = uci.cursor()
     local enabled
-    local is_active
-    local disabled = c:get("mptun", "IPRB", "disabled") or ''
+    local is_active = nil
+    local service_mode = c:get("mptun", "global", "service_mode") or ''
     local active = c:get("mptun", "IPRB", "active") or ''
 
-    if disabled == '1' then
-        enabled = false
-    else
-        if disabled == '0' then
-            enabled = true
+    if service_mode == 'IPRB' then
+        enabled = IPRB_is_enabled()
+        if active == '1' then
+            is_active = true
         else
-            return 0
+            if active == '0' then
+                is_active = false
+            end
         end
-    end
-    if active == '1' then
-        is_active = true
-    else
-        if active == '0' then
-            is_active = false
-        else
-            return 0
-        end
-    end
-    if enabled ~= is_active then
-        if enabled then
-            send_net_ctrl_msg('start')
-        else
-            send_net_ctrl_msg('stop')
+
+        -- Synchronization will only be performed once both the local and cloud-based enabled statuses are clear.
+        if enabled ~= nil and is_active ~= nil and enabled ~= is_active then
+            if enabled then
+                send_net_ctrl_msg('start')
+            else
+                send_net_ctrl_msg('stop')
+            end
         end
     end
     return 0
 end
-local function snoop_response_identity_verification(resp)
+local function parse_response_identity_verification(resp)
     local ok = false
     local res_table
     if resp.body ~= nil then
@@ -1235,16 +1227,17 @@ local function snoop_response_identity_verification(resp)
     end
     if is_IPRB ~= true then
         return 1
-    else
-        set_service_mode('IPRB')
     end
     if parse_fail == true then
         return -2
     end
-    -- write configuration.
+    local mode = "classic"
     local identity
     local active
     local use_exit = '0'
+    if is_IPRB == true then
+        mode = "IPRB"
+    end
     if is_primary == true then
         identity = "primary"
     else
@@ -1261,15 +1254,9 @@ local function snoop_response_identity_verification(resp)
         active = "0"
     end
 
-    local opt = {}
-    opt.identity = tostring(identity)
-    opt.active = tostring(active)
-    opt.net_id = tostring(net_id)
-    opt.use_exit = tostring(use_exit)
-    set_IPRB_option(opt)
-
     return {
         err_code = 0,
+        mode = tostring(mode),
         identity = tostring(identity),
         active = tostring(active),
         net_id = tostring(net_id),
@@ -1277,6 +1264,35 @@ local function snoop_response_identity_verification(resp)
     }
 end
 
+local function snoop_response_identity_verification(resp)
+    local ret = parse_response_identity_verification(resp)
+    if type(ret) == "table" and ret.err_code == 0 then
+        if ret.mode ~= nil and (ret.mode == 'classic' or ret.mode == 'IPRB') then
+            set_service_mode(tostring(ret.mode))
+        end
+        if ret.mode == 'IPRB' then
+            local c = uci.cursor()
+            local opt = {}
+            opt.identity = tostring(ret.identity)
+            opt.active = tostring(ret.active)
+            opt.net_id = tostring(ret.net_id)
+            opt.use_exit = tostring(ret.use_exit)
+
+            -- If the local enabled status is unclear, update it according to the cloud status.
+            local disabled = c:get("mptun", "IPRB", "disabled")
+            if disabled == nil and (ret.active == '1' or ret.active == '0') then
+                if ret.active == '1' then
+                    opt.disabled = tostring('0')
+                else
+                    opt.disabled = tostring('1')
+                end
+            end
+            set_IPRB_option(opt)
+
+            push_status_to_wb()
+        end
+    end
+end
 local function snoop_response_access_by_code(resp)
     local ok = false
     local res_table
@@ -1326,6 +1342,7 @@ end
     @method-type: call
     @method-name: get_node_info
     @method-desc: get device identity for cloud.
+    @out string     info.mode           currently service_mode
     @out string     info.identity       currently identity
     @out string     info.active         cloud allow enabling or not
     @out string     info.use_exit       for secondary, use exit node or not
@@ -1343,7 +1360,7 @@ function M.get_node_info(params)
             status_code = resp.status_code,
             body = resp.body
         }
-        ret = snoop_response_identity_verification(opt)
+        ret = parse_response_identity_verification(opt)
         if type(ret) ~= "table" then
             return { err_code = -2, err_msg = "fail!" }
         end
