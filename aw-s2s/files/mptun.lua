@@ -142,7 +142,6 @@ local function check_params_valid(params, checkfunc)
             return checkfunc(key, value)
         elseif t == "table" then
             for k, v in pairs(value) do
-                local ret = true
                 local real_k = k
                 if type(k) == 'number' then
                     real_k = key
@@ -825,7 +824,7 @@ local function get_network_id()
 end
 
 local function send_net_ctrl_msg(active)
-    local enableStatus = false
+    local enableStatus
     if active == 'start' then
         enableStatus = true
     else
@@ -835,7 +834,7 @@ local function send_net_ctrl_msg(active)
     if not res and res.err_code ~= 0 then
         return { err_code = -1, err_msg = "get networkID fail!" }
     end
-    local networkId = res.networkId
+    --local networkId = res.networkId
     local opt = {
         ["req_method"] = "POST",
         ["req_path"] = req_path["req_net_ctrl"],
@@ -1018,7 +1017,7 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.set_use_exit_node(params)
-    local enabled = false
+    local enabled
     if params ~= nil and params.enabled ~= nil and type(params.enabled) == "boolean" then
         enabled = params.enabled
     else
@@ -1036,7 +1035,7 @@ function M.set_use_exit_node(params)
     if resp.err_code ~= 0 or resp.status_code == nil or resp.status_code ~= 200 then
         return { err_code = -1, err_msg = "https communicate fail!" }
     elseif resp.body ~= nil then
-        local ok = false
+        local ok
         local res_table
         ok, res_table = pcall(cjson.decode, resp.body)
         if not ok or res_table == nil then
@@ -1082,7 +1081,7 @@ function M.reset(params)
     if resp.err_code ~= 0 or resp.status_code == nil or resp.status_code ~= 200 then
         return { err_code = -1, err_msg = "https communicate fail!" }
     elseif resp.body ~= nil then
-        local ok = false
+        local ok
         local res
         ok, res = pcall(cjson.decode, resp.body)
         if ok and res.info ~= nil and type(res.info) == 'boolean' and res.info == true then
@@ -1113,7 +1112,7 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.get_started(params)
-    local attempt_to_be = ''
+    local attempt_to_be
     if params ~= nil and params.attempt_to_be ~= nil and type(params.attempt_to_be) == "string" then
         if params.attempt_to_be == 'primary' or params.attempt_to_be == 'secondary' then
             attempt_to_be = params.attempt_to_be
@@ -1151,8 +1150,8 @@ end
 
 local function pre_req_deal_identity_verification(req_path, params)
     local c = uci.cursor()
-    local enabled = true
-    local is_active = true
+    local enabled
+    local is_active
     local disabled = c:get("mptun", "IPRB", "disabled") or ''
     local active = c:get("mptun", "IPRB", "active") or ''
 
@@ -1193,7 +1192,6 @@ local function snoop_response_identity_verification(resp)
         return -1
     end
 
-    local c = uci.cursor()
     local net_id, is_primary, is_active, is_use_exit
     local is_IPRB = false
     local parse_fail = false
@@ -1245,7 +1243,7 @@ local function snoop_response_identity_verification(resp)
     end
     -- write configuration.
     local identity
-    local active = '0'
+    local active
     local use_exit = '0'
     if is_primary == true then
         identity = "primary"
@@ -1338,7 +1336,7 @@ end
     @out-example: {"id":15,"jsonrpc":"2.0","result":{"info":{"use_exit":"0","active":"1","err_code":0,"identity":"primary","net_id":"7c3e7da5dc2413e8e8ff7f6bdde31cab"}}}
 --]]
 function M.get_node_info(params)
-    local ret = nil
+    local ret
     local resp = get_info_from_cloud()
     if resp ~= nil and resp.err_code == 0 and resp.status_code ~= nil and resp.body ~= nil then
         local opt = {
