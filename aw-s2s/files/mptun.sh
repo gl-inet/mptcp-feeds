@@ -227,11 +227,9 @@ set_firewall()
     uci set firewall.lan2mptun.src='lan'
     uci set firewall.lan2mptun.dest='mptun'
 
-    [ "${service_mode}" = "IPRB" ] && {
-        uci set firewall.guest2mptun=forwarding
-        uci set firewall.guest2mptun.src='guest'
-        uci set firewall.guest2mptun.dest='mptun'
-    }
+    uci set firewall.guest2mptun=forwarding
+    uci set firewall.guest2mptun.src='guest'
+    uci set firewall.guest2mptun.dest='mptun'
 
     # IPRB mode, as the primary, allows DNS.
     if [ "${service_mode}" = 'IPRB' -a "${IPRB_identity}" = 'primary' ] ;then
