@@ -3,6 +3,12 @@ DEBUG_SERVER="$(cat /etc/mptun/debugip 2>/dev/null)"
 listenPort=""
 AW_P2P_PORT='58080'
 
+AW_DNS_PORT='1553'
+DNS_MARK=$(uci -q get mptun.global.dns_mark || echo 0x8)
+
+AW_TMP_DIR="/tmp/run/aw_tmp_dir"
+mkdir -p ${AW_TMP_DIR}
+
 use_fw4='0'
 [ -n "$(which fw4)" ] && use_fw4='1'
 
@@ -183,6 +189,8 @@ set_udptun() {
 
 }
 
+FW4_FILE_MPTUN_POST_RULESET='/usr/share/nftables.d/ruleset-post/accept_br_to_mptun.nft'
+FILE_AW_DNS_RULE="${AW_TMP_DIR}/aw_dns_rule"
 set_firewall()
 {
     local cfg="$1"
@@ -214,6 +222,10 @@ set_firewall()
     srcips="$(echo "$srcips"|sed 's/,/ /g')"
     destips="$(echo "$destips"|sed 's/,/ /g')"
 
+    if [ "$use_fw4" = '1' ] ;then
+        echo '' >"$FW4_FILE_MPTUN_POST_RULESET"
+    fi
+
     uci set firewall.mptun=zone
     uci set firewall.mptun.name='mptun'
     uci set firewall.mptun.device="${DEV:=mptun0}"
@@ -230,6 +242,18 @@ set_firewall()
     uci set firewall.guest2mptun=forwarding
     uci set firewall.guest2mptun.src='guest'
     uci set firewall.guest2mptun.dest='mptun'
+
+    if [ "$use_fw4" = '1' ] ;then
+        echo "insert rule inet fw4 forward iifname \"br-*\" oifname \"${DEV:=mptun0}\" counter accept" >>"$FW4_FILE_MPTUN_POST_RULESET"
+    else
+        uci set firewall.br2mptun=rule
+        uci set firewall.br2mptun.name='accept br-+ to mptun'
+        uci set firewall.br2mptun.src='*'
+        uci set firewall.br2mptun.dest='mptun'
+        uci set firewall.br2mptun.proto='any'
+        uci set firewall.br2mptun.extra="-i br-+"
+        uci set firewall.br2mptun.target="ACCEPT"
+    fi
 
     # IPRB mode, as the primary, allows DNS.
     if [ "${service_mode}" = 'IPRB' -a "${IPRB_identity}" = 'primary' ] ;then
@@ -316,26 +340,15 @@ set_firewall()
     fi
 
      [ "$use_exit" = "1" ] && {
-        uci set firewall.dns_mptun=redirect
-        uci set firewall.dns_mptun.name='dns for mptun'
-        uci set firewall.dns_mptun.src='lan'
-        uci set firewall.dns_mptun.src_dport='53'
-        uci set firewall.dns_mptun.dest='lan'
-        uci set firewall.dns_mptun.dest_port='1553'
-        uci add_list firewall.dns_mptun.proto='udp'
-        uci add_list firewall.dns_mptun.proto='tcp'
-        uci set firewall.dns_mptun.enabled='1'
-        uci set firewall.dns_mptun.extra='-m set ! --match-set mproxy_mac_skip src'
-        uci set firewall.dns_mptun_guest=redirect
-        uci set firewall.dns_mptun_guest.name='dns for mptun guest'
-        uci set firewall.dns_mptun_guest.src='guest'
-        uci set firewall.dns_mptun_guest.src_dport='53'
-        uci set firewall.dns_mptun_guest.dest='guest'
-        uci set firewall.dns_mptun_guest.dest_port='1553'
-        uci add_list firewall.dns_mptun_guest.proto='udp'
-        uci add_list firewall.dns_mptun_guest.proto='tcp'
-        uci set firewall.dns_mptun_guest.enabled='1'
-        uci set firewall.dns_mptun_guest.extra='-m set ! --match-set mproxy_mac_skip src'
+        if [ "${use_fw4}" = '1' ] ;then
+            echo "chain=\"aw_redirect\";option=\"meta l4proto tcp meta mark and $DNS_MARK == $DNS_MARK\";target=\"redirect to :$AW_DNS_PORT\"" >> "${FILE_AW_DNS_RULE}"
+            echo "chain=\"aw_redirect\";option=\"meta l4proto udp meta mark and $DNS_MARK == $DNS_MARK\";target=\"redirect to :$AW_DNS_PORT\"" >> "${FILE_AW_DNS_RULE}"
+            echo "chain=\"dns_accept\";option=\"tcp dport $AW_DNS_PORT meta mark and $DNS_MARK == $DNS_MARK\";target=\"accept\"" >> "${FILE_AW_DNS_RULE}"
+            echo "chain=\"dns_accept\";option=\"udp dport $AW_DNS_PORT meta mark and $DNS_MARK == $DNS_MARK\";target=\"accept\"" >> "${FILE_AW_DNS_RULE}"
+        else
+            echo "chain=\"aw_redirect\";option=\"-p tcp -m mark --mark $DNS_MARK/$DNS_MARK\";target=\"-j REDIRECT --to-ports $AW_DNS_PORT\"" >> "${FILE_AW_DNS_RULE}"
+            echo "chain=\"aw_redirect\";option=\"-p udp -m mark --mark $DNS_MARK/$DNS_MARK\";target=\"-j REDIRECT --to-ports $AW_DNS_PORT\"" >> "${FILE_AW_DNS_RULE}"
+        fi
      }
 
     [ "$TYPE" = "GATEWAY" -a -n "$listenPort" ] && {
@@ -531,12 +544,12 @@ table ip mpnet {
     chain MPROXY_PREROUTING {
         type filter hook prerouting priority mangle; policy accept;
         iifname != "br-*" accept
+        ${use_exit:+udp dport 53 ether saddr != @mproxy_mac_skip counter packets 0 bytes 0 mark set \$DNS_MARK}
+        ${use_exit:+tcp dport 53 ether saddr != @mproxy_mac_skip counter packets 0 bytes 0 mark set \$DNS_MARK}
         ip daddr @mproxy_skip accept
         ether saddr @mproxy_mac_skip accept
         ip daddr @mproxy_set mark set \$UDPMARK
         #出口节点
-        ${use_exit:+udp dport 53 counter packets 0 bytes 0 mark set \$DNS_MARK}
-        ${use_exit:+tcp dport 53 counter packets 0 bytes 0 mark set \$DNS_MARK}
         ${use_exit:+ip daddr @mproxy_privateip accept}
 
         #如果存在udp聚合peer,则应用这条规则
@@ -571,6 +584,8 @@ set_ipt_script() {
     local tcptun_is_exist="$5"
     local tcpmark="$6"
     local udpmark="$7"
+
+    local use_exit=$(uci -q get mptun.global.use_exit)
 
     ipset create mproxy_set hash:net 2>/dev/null
     ipset flush  mproxy_set 2>/dev/null
@@ -608,6 +623,13 @@ set_ipt_script() {
 
     $IPTW -t mangle -A MPROXY_PREROUTING ! -i br-+ -j RETURN
 
+    if [ "$use_exit" = "1" ];then
+        local dns_mark=$(uci -q get mptun.global.dns_mark || echo 0x8)
+        $IPTW -t mangle -A MPROXY_PREROUTING  -p udp --dport 53 -m set ! --match-set mproxy_mac_skip src -j MARK --set-xmark $dns_mark/$dns_mark
+        $IPTW -t mangle -A MPROXY_PREROUTING  -p tcp --dport 53 -m set ! --match-set mproxy_mac_skip src -j MARK --set-xmark $dns_mark/$dns_mark
+        $IPTW -t mangle -A MPASS -m mark --mark $dns_mark/$dns_mark -j RETURN
+    fi
+
     $IPTW -t mangle -D FORWARD -i mptun0 -o mptun0 -j MARK --set-xmark 0x5/0x5 2>/dev/null
     $IPTW -t mangle -I FORWARD -i mptun0 -o mptun0 -j MARK --set-xmark 0x5/0x5
 
@@ -621,12 +643,7 @@ set_ipt_script() {
     $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_mac_skip src -j RETURN
     $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_set dst -j MARK --set-xmark $udpmark/$udpmark
 
-    local use_exit=$(uci -q get mptun.global.use_exit)
     if [ "$use_exit" = "1" ];then
-        local dns_mark=$(uci -q get mptun.global.dns_mark || echo 0x8)
-        $IPTW -t mangle -A MPROXY_PREROUTING  -p udp --dport 53 -j MARK --set-xmark $dns_mark/$dns_mark
-        $IPTW -t mangle -A MPROXY_PREROUTING  -p tcp --dport 53 -j MARK --set-xmark $dns_mark/$dns_mark
-        $IPTW -t mangle -A MPASS -m mark --mark $dns_mark/$dns_mark -j RETURN
         $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst  -j RETURN
         $IPTW -t mangle -A MPROXY_PREROUTING -m set --match-set mproxy_privateip dst  -j RETURN
     fi
@@ -799,6 +816,10 @@ clean_udptun() {
 
         # clean IPRB mode-specific rules
         uci -q del firewall.guest2mptun
+        rm ${FW4_FILE_MPTUN_POST_RULESET} 2>/dev/null
+        rm ${FILE_AW_DNS_RULE} 2>/dev/null
+        uci -q del firewall.br2mptun
+
         uci -q del firewall.mptun_allowe_dns
         uci -q del firewall.mptun_allowe_aw_p2p
 
