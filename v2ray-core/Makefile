@@ -10,7 +10,12 @@ PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/luochongjun/mptcptun.git
 PKG_SOURCE_DATE:=2024-01-04
 PKG_SOURCE_VERSION:=52c8e7080742dc9b422f583b9335dca7e95854e3
+PKG_SOURCE_IS_ZST:=$(shell grep -q 'PKG_SOURCE ?=.*\.tar\.zst' $(INCLUDE_DIR)/download.mk && echo y)
+ifeq ($(PKG_SOURCE_IS_ZST),y)
+PKG_MIRROR_HASH:=98e5cfac763a7eafc1a6ca15c61eb7edb651daa69dc01c8eb66e100cfc6116f1
+else
 PKG_MIRROR_HASH:=3b92bfdabbd1c989439e626f709eead86a5f2ba973e2d81b8424f8bd5a2b04d2
+endif
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
