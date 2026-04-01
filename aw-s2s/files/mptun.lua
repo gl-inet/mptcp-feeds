@@ -29,7 +29,9 @@ local req_path = {
     ["req_reset"] = "/sdwan/sdk-iprb/v1/device/network/reset",
     ["req_order_alerts"] = "/sdwan/sdk-iprb/v1/device/order/alerts",
     ["req_order_pageList"] = "/sdwan/sdk-iprb/v1/device/order/pageList",
-    ["req_order_alerts_dismiss"] = "/sdwan/sdk-iprb/v1/device/order/alerts/dismiss"
+    ["req_order_alerts_dismiss"] = "/sdwan/sdk-iprb/v1/device/order/alerts/dismiss",
+    ["req_order_alerts_mute"] = "/sdwan/sdk-iprb/v1/network/plan/alerts/mute",
+    ["req_order_refund_link"] = "/sdwan/sdk-iprb/v1/device/order/refund-link"
 }
 local valid_req_path = {
     [req_path["req_get_identity"]] = true,
@@ -46,7 +48,9 @@ local valid_req_path = {
     [req_path["req_reset"]] = true,
     [req_path["req_order_alerts"]] = true,
     [req_path["req_order_pageList"]] = true,
-    [req_path["req_order_alerts_dismiss"]] = true
+    [req_path["req_order_alerts_dismiss"]] = true,
+    [req_path["req_order_alerts_mute"]] = true,
+    [req_path["req_order_refund_link"]] = true
 }
 
 local valid_req_header = {
