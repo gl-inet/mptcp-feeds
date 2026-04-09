@@ -1,3 +1,5 @@
+. /lib/functions/vpn_func/fw4_func.sh
+
 TYPE="EDGE"
 DEBUG_SERVER="$(cat /etc/mptun/debugip 2>/dev/null)"
 listenPort=""
@@ -465,22 +467,34 @@ gen_nft_script() {
     local udp_route_ips="$3"
     local udp_global_proto="$4"
     local tcptun_is_exist="$5"
+    local tcpmark="$6"
+    local udpmark="$7"
     local exit_is_dev=""
+    local TCP_PROXY_PORT="1080"
+    local MPPROTO="tcp,udp"
 
     #exit node
     local use_exit="$(uci -q get mptun.global.use_exit)"
     [ "$use_exit" = "1" -a -z "$tcptun_is_exist" ] && exit_is_dev=1
     [ -n "$use_exit" -a "$use_exit" = "0" ] && use_exit=""
 
+    local lanmark="$(uci -q get mptun.global.lanmark || echo 0x4)"
+    local dns_mark="$(uci -q get mptun.global.dns_mark || echo 0x8)"
+    local tcpmark_mask_inv="$(printf '0x%x' $((~tcpmark & 0xffffffff)))"
+    local udpmark_mask_inv="$(printf '0x%x' $((~udpmark & 0xffffffff)))"
+    local dns_mark_mask_inv="$(printf '0x%x' $((~dns_mark & 0xffffffff)))"
+    local mptun_flow_mark="$(printf '0x%x' $((tcpmark | lanmark)))"
+    local mptun_flow_mark_mask_inv="$(printf '0x%x' $((~mptun_flow_mark & 0xffffffff)))"
+
     local item mproxy_set=""
-    for item in $(echo $udp_route_ips|sed 's/,/ /g'); do
-        if [ "$item" = "0.0.0.0/0" -o "$item" = "::/0" ];then
+    for item in $(echo "$udp_route_ips" | sed 's/,/ /g'); do
+        if [ "$item" = "0.0.0.0/0" -o "$item" = "::/0" ]; then
             logger -t mptun "ignore 0.0.0.0/0 route"
         else
             if [ -z "$mproxy_set" ]; then
                 mproxy_set="$item"
             else
-                mproxy_set="$mproxy_set"",$item"
+                mproxy_set="$mproxy_set,$item"
             fi
         fi
     done
@@ -488,92 +502,64 @@ gen_nft_script() {
     #Prevent mproxy_set from being empty and causing nft script exception
     [ -z "$mproxy_set" ] && mproxy_set='224.0.0.1'
 
-    local dns_mark=$(uci -q get mptun.global.dns_mark || echo 0x8)
     local skip_addr='127.0.0.1/32, 224.0.0.0/4, 255.255.255.255/32, 169.254.0.0/16, 192.0.2.0/24, 198.18.0.0/15'
-
-    local policy_ips policy_file=/etc/mptun/policy.json
+    local policy_ips policy_file="/etc/mptun/policy.json"
     [ -f "$policy_file" ] && {
-        policy_ips="$(jsonfilter -q -i $policy_file -e '@.alwaysUseLocalExitIpList'|sed 's/ //g;s/\[//g;s/\]//g')"
+        policy_ips="$(jsonfilter -q -i "$policy_file" -e '@.alwaysUseLocalExitIpList' | sed 's/ //g;s/\[//g;s/\]//g')"
         for item in "$policy_ips"; do
-            skip_addr="$skip_addr"",$item"
+            skip_addr="$skip_addr,$item"
         done
     }
 
-    local macs="$(jsonfilter -q -i $file  -e '@.policyMac'|sed 's/\",//g;s/\[//g;s/\]//g;s/\"//g;')"
-    local skip_mac
-    for item in "$macs"; do
-        if [ -z "$skip_mac" ]; then
-            skip_mac="$item"
-        else
-            skip_mac="$skip_mac"",$item"
-        fi
+    local policy_macs="$(jsonfilter -q -i "$policy_file" -e '@.policyMac' | sed 's/",//g;s/\[//g;s/\]//g;s/"//g')"
+    local mproxy_mac_set=''
+    local mac=''
+    for item in $policy_macs; do
+        mac="$(echo "$item" | sed 's/\(..\)/\1:/g; s/:$//')"
+        [ -z "$mac" ] && continue
+        mproxy_mac_set="${mproxy_mac_set}${mproxy_mac_set:+, }${mac}"
     done
 
-cat > /var/run/mptun.nft <<EOF
-
-#!/usr/sbin/nft -f
-define SERVER = {$server}
-define TCP_PROXY_PORT = 1080
-define TCP_ROUTE_IPS = {$tcp_route_ips}
-define TCPMARK = "$6"
-define UDPMARK = "$7"
-define skip_addr = {$skip_addr}
-define DNS_MARK = "$dns_mark"
-define MPPROTO = {tcp, udp}
-
-table ip mpnet {}
-delete table ip mpnet
-
-table ip mpnet {
-    set mproxy_privateip {
-        type ipv4_addr; flags interval; elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }
+    command -v fw4_init_set_context >/dev/null 2>&1 || {
+        logger -t mptun "fw4_func.sh not available"
+        return 1
     }
 
-    set mproxy_set {
-        type ipv4_addr; flags interval; elements = {$mproxy_set}
+    fw4_init_set_context "/var/run/mptun.nft" "ip mpnet" || return 1
+
+    fw4_set_create_member_of_table "set" "mproxy_privateip" "type ipv4_addr; flags interval; elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }"
+    fw4_set_create_member_of_table "set" "mproxy_set" "type ipv4_addr; flags interval; elements = { $mproxy_set }"
+    fw4_set_create_member_of_table "set" "mproxy_skip" "type ipv4_addr; flags interval; elements = { $skip_addr }"
+    fw4_set_create_member_of_table "set" "mproxy_mac_skip" "type ether_addr; flags interval;"
+    [ -n "$mproxy_mac_set" ] && fw4_set_add_append_statement "add element $FW4_TABLE_NAME mproxy_mac_skip { $mproxy_mac_set }"
+
+
+    fw4_set_create_chain "MPROXY_PREROUTING" "type filter hook prerouting priority mangle; policy accept;"
+    fw4_set_create_chain "FORWARD" "type filter hook forward priority mangle; policy accept;"
+    fw4_set_create_chain "POSTROUTING" "type filter hook postrouting priority srcnat; policy accept;"
+
+    fw4_set_add_append_statement "add rule $FW4_TABLE_NAME MPROXY_PREROUTING iifname != \"br-*\" accept"
+    [ -n "$use_exit" ] && {
+        fw4_set_add_append_statement "add rule $FW4_TABLE_NAME MPROXY_PREROUTING udp dport 53 ether saddr != @mproxy_mac_skip counter packets 0 bytes 0 mark set mark and $dns_mark_mask_inv or $dns_mark"
+        fw4_set_add_append_statement "add rule $FW4_TABLE_NAME MPROXY_PREROUTING tcp dport 53 ether saddr != @mproxy_mac_skip counter packets 0 bytes 0 mark set mark and $dns_mark_mask_inv or $dns_mark"
     }
+    fw4_set_add_append_statement "add rule $FW4_TABLE_NAME MPROXY_PREROUTING ip daddr @mproxy_skip accept"
+    fw4_set_add_append_statement "add rule $FW4_TABLE_NAME MPROXY_PREROUTING ether saddr @mproxy_mac_skip accept"
+    fw4_set_add_append_statement "add rule $FW4_TABLE_NAME MPROXY_PREROUTING ip daddr @mproxy_set mark set mark and $udpmark_mask_inv or $udpmark"
+    #出口节点
+    [ -n "$use_exit" ] && fw4_set_add_append_statement "add rule $FW4_TABLE_NAME MPROXY_PREROUTING ip daddr @mproxy_privateip accept"
 
-    set mproxy_skip {
-        type ipv4_addr; flags interval; elements = {$skip_addr}
-    }
+    #如果存在udp聚合peer,则应用这条规则
+    [ -n "$udp_global_proto" ] && fw4_set_add_append_statement "add rule $FW4_TABLE_NAME MPROXY_PREROUTING ip protocol icmp mark and $udpmark != $udpmark counter packets 0 bytes 0 mark set mark and $udpmark_mask_inv or $udpmark"
+    [ -n "$exit_is_dev" ] && fw4_set_add_append_statement "add rule $FW4_TABLE_NAME MPROXY_PREROUTING mark set mark and $udpmark_mask_inv or $udpmark counter packets 0 bytes 0 "
+    [ -n "$tcptun_is_exist" ] && fw4_set_add_append_statement "add rule $FW4_TABLE_NAME MPROXY_PREROUTING ip daddr { $tcp_route_ips } meta l4proto { $MPPROTO } mark set mark and $tcpmark_mask_inv or $tcpmark tproxy ip to 127.0.0.1:$TCP_PROXY_PORT counter packets 0 bytes 0 accept"
 
-    set mproxy_mac_skip {
-        type ether_addr; flags interval;
-    }
+    fw4_set_add_append_statement "add rule $FW4_TABLE_NAME FORWARD iifname \"mptun0\" oifname \"mptun0\" mark set mark and $mptun_flow_mark_mask_inv or $mptun_flow_mark counter packets 0 bytes 0"
+    fw4_set_add_append_statement "add rule $FW4_TABLE_NAME POSTROUTING mark and $mptun_flow_mark == $mptun_flow_mark counter packets 0 bytes 0 return"
 
-    chain MPROXY_PREROUTING {
-        type filter hook prerouting priority mangle; policy accept;
-        iifname != "br-*" accept
-        ${use_exit:+udp dport 53 ether saddr != @mproxy_mac_skip counter packets 0 bytes 0 mark set \$DNS_MARK}
-        ${use_exit:+tcp dport 53 ether saddr != @mproxy_mac_skip counter packets 0 bytes 0 mark set \$DNS_MARK}
-        ip daddr @mproxy_skip accept
-        ether saddr @mproxy_mac_skip accept
-        ip daddr @mproxy_set mark set \$UDPMARK
-        #出口节点
-        ${use_exit:+ip daddr @mproxy_privateip accept}
 
-        #如果存在udp聚合peer,则应用这条规则
-        ${udp_global_proto:+ip protocol icmp mark 0x0 counter packets 0 bytes 0 mark set \$UDPMARK nftrace set 1}
-        ${exit_is_dev:+mark set \$UDPMARK counter packets 0 bytes 0 nftrace set 1}
-        ${tcptun_is_exist:+ip daddr \$TCP_ROUTE_IPS meta l4proto \$MPPROTO mark set \$TCPMARK tproxy ip to 127.0.0.1:\$TCP_PROXY_PORT counter packets 0 bytes 0 nftrace set 1 accept}
-    }
-
-    chain FORWARD {
-        type filter hook forward priority mangle; policy accept;
-        iifname "mptun0" oifname "mptun0" mark set 0x5 counter packets 0 bytes 0 nftrace set 1
-    }
-
-    chain POSTROUTING {
-        type filter hook postrouting priority srcnat; policy accept;
-        mark 0x5 counter packets 0 bytes 0 nftrace set 1 return
-    }
-}
-
-EOF
-
-    local domains="$(jsonfilter -i $policy_file  -e '@.alwaysUseLocalExitDomainList')"
+    local domains="$(jsonfilter -i $policy_file -e '@.alwaysUseLocalExitDomainList')"
     [ -n "$domains" ] && set_domain_policy "$domains"
-
 }
 
 set_ipt_script() {
@@ -712,7 +698,7 @@ set_proxy() {
     if [ "${use_fw4}" = '1' ];then
         gen_nft_script "$servers" "$tcp_route_ips" "$udp_route_ips" "$udp_global_proto" "$tcptun_is_exist" "$2" "$3"
         set_dns
-        nft -f /var/run/mptun.nft
+        fw4_set_finish_and_apply
     else
         set_ipt_script "$servers" "$tcp_route_ips" "$udp_route_ips" "$udp_global_proto" "$tcptun_is_exist" "$2" "$3"
     fi

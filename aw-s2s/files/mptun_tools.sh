@@ -5,6 +5,13 @@ TABLE_NAME="mptun_tools"
 use_fw4='0'
 [ -n "$(which fw4)" ] && use_fw4='1'
 
+UDP_MARK="$(uci -q get mptun.global.udpmark || echo 0x2)"
+DNS_MARK="$(uci -q get mptun.global.dnsmark || echo 0x8)"
+SKIP_POLICY_MARK='0x8000'
+SKIP_POLICY_MARK_MASK_REVERSE="$(printf "0x%x" $((~0xf000 & 0xffffffff)))"
+UDP_MARK_MASK_REVERSE="$(printf '0x%x' $((~UDP_MARK & 0xffffffff)))"
+DNS_MARK_MASK_REVERSE="$(printf '0x%x' $((~DNS_MARK & 0xffffffff)))"
+
 usage() {
     echo "usage:
     mptun_tools option arg1 arg2 arg3 ..."
@@ -35,10 +42,10 @@ skip_mptun_policy_for_spec_dev() {
     if [ "${use_fw4}" = '1' ] ;then
         nft add table inet ${TABLE_NAME}
         nft add chain inet ${TABLE_NAME} prerouting_skip_policy '{ type filter hook prerouting priority mangle+1; policy accept; }'
-        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and 0x2 == 0x2 ether saddr "${dev_mac}" meta mark set meta mark and 0xffff8fff or 0x00008000 comment "\"${comment}\""
-        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and 0x2 == 0x2 ether saddr "${dev_mac}" meta mark set meta mark and 0xfffffffd comment "\"${comment}\""
-        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and 0x8 == 0x8 ether saddr "${dev_mac}" meta mark set meta mark and 0xffff8fff or 0x00008000 comment "\"${comment}\""
-        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and 0x8 == 0x8 ether saddr "${dev_mac}" meta mark set meta mark and 0xfffffff7 comment "\"${comment}\""
+        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and ${UDP_MARK} == ${UDP_MARK} ether saddr "${dev_mac}" meta mark set meta mark and ${SKIP_POLICY_MARK_MASK_REVERSE} or ${SKIP_POLICY_MARK} comment "\"${comment}\""
+        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and ${UDP_MARK} == ${UDP_MARK} ether saddr "${dev_mac}" meta mark set meta mark and ${UDP_MARK_MASK_REVERSE} comment "\"${comment}\""
+        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and ${DNS_MARK} == ${DNS_MARK} ether saddr "${dev_mac}" meta mark set meta mark and ${SKIP_POLICY_MARK_MASK_REVERSE} or ${SKIP_POLICY_MARK} comment "\"${comment}\""
+        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and ${DNS_MARK} == ${DNS_MARK} ether saddr "${dev_mac}" meta mark set meta mark and ${DNS_MARK_MASK_REVERSE} comment "\"${comment}\""
     fi
 }
 
@@ -63,10 +70,10 @@ skip_mptun_policy_for_all() {
     if [ "${use_fw4}" = '1' ] ;then
         nft add table inet ${TABLE_NAME}
         nft add chain inet ${TABLE_NAME} prerouting_skip_policy '{ type filter hook prerouting priority mangle+1; policy accept; }'
-        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and 0x2 == 0x2 meta mark set meta mark and 0xffff8fff or 0x00008000 comment "\"${comment}\""
-        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and 0x2 == 0x2 meta mark set meta mark and 0xfffffffd comment "\"${comment}\""
-        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and 0x8 == 0x8 meta mark set meta mark and 0xffff8fff or 0x00008000 comment "\"${comment}\""
-        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and 0x8 == 0x8 meta mark set meta mark and 0xfffffff7 comment "\"${comment}\""
+        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and ${UDP_MARK} == ${UDP_MARK} meta mark set meta mark and ${SKIP_POLICY_MARK_MASK_REVERSE} or ${SKIP_POLICY_MARK} comment "\"${comment}\""
+        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and ${UDP_MARK} == ${UDP_MARK} meta mark set meta mark and ${UDP_MARK_MASK_REVERSE} comment "\"${comment}\""
+        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and ${DNS_MARK} == ${DNS_MARK} meta mark set meta mark and ${SKIP_POLICY_MARK_MASK_REVERSE} or ${SKIP_POLICY_MARK} comment "\"${comment}\""
+        nft add rule inet ${TABLE_NAME} prerouting_skip_policy meta mark and ${DNS_MARK} == ${DNS_MARK} meta mark set meta mark and ${DNS_MARK_MASK_REVERSE} comment "\"${comment}\""
     fi
 }
 
