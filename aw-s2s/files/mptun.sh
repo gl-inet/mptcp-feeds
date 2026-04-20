@@ -764,6 +764,7 @@ mptun_init() {
     set_firewall "$cfg" "$dev"
     set_proxy "$cfg" "$tcpmark" "$udpmark"
     sync
+    /etc/init.d/firewall reload 2>/dev/null
 }
 
 clean_proxy() {
