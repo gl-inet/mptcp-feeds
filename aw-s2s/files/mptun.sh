@@ -189,7 +189,7 @@ set_udptun() {
 
 }
 
-FW4_FILE_MPTUN_POST_RULESET='/usr/share/nftables.d/ruleset-post/accept_br_to_mptun.nft'
+FW4_FILE_MPTUN_POST_RULESET='/usr/share/nftables.d/ruleset-post/aw_set_fw4.nft'
 FILE_AW_DNS_RULE="${AW_TMP_DIR}/aw_dns_rule"
 set_firewall()
 {
@@ -381,7 +381,7 @@ set_firewall()
 
     # DNAT does not exist in IPRB mode.
     if [ "${service_mode}" != 'IPRB' ] ;then
-        [ "${use_fw4}" = '1' ] && nft insert rule inet fw4 forward_mptun iifname "mptun0" ct status dnat counter $rule_target
+        [ "${use_fw4}" = '1' ] && echo "insert rule inet fw4 forward_mptun iifname "mptun0" ct status dnat counter $rule_target" >>"$FW4_FILE_MPTUN_POST_RULESET"
     fi
 }
 

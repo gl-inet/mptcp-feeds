@@ -26,3 +26,5 @@ uci commit mptun
     uci set firewall.dns_over_guest.mark="!$dns_mark/$dns_mark"
 
 uci commit firewall
+
+rm -f /usr/share/nftables.d/ruleset-post/accept_br_to_mptun.nft
