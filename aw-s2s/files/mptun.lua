@@ -1059,11 +1059,16 @@ end
 function M.AW_get_global_summary(params)
     local result = {}
     local ret = M.get_AW_status()
+    local c = uci.cursor()
+    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
     if type(ret) == 'table' then
         result.enabled = ret.enabled
         result.mode = ret.mode
         if ret.mode == 'IPRB' then
-            if type(ret.status) == 'table' and type(ret.status.sub_mode) == 'string' and ret.status.sub_mode == 'AstroMesh' then
+            if sub_mode == 'classic' then
+                result.mode = "IPRB"
+            else
+                -- In IPRB, if sub_mode is not classic, it will be AstroMesh
                 result.mode = "AstroMesh"
             end
         end
@@ -1379,7 +1384,7 @@ function M.report_net_resource(params)
         ["req_method"] = "POST",
         ["req_path"] = req_path["report_net_resource"],
         ["req_body"] = {
-            ["resource"] = resource
+            ["resources"] = resource
         }
     }
     local resp = __raw_request(opt)
