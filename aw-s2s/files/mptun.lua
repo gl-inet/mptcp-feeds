@@ -1374,6 +1374,9 @@ end
 
 function M.report_net_resource(params)
     local resource = {}
+    if params == nil or params.resource == nil or type(params.resource) ~= "table" then
+        return { err_code = -1, err_msg = "invalid params !" }
+    end
     for index, item in ipairs(params.resource) do
         local node = normalize_report_net_resource_node(item)
         if node == nil then
