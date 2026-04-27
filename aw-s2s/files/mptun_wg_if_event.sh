@@ -15,6 +15,8 @@ mkdir -p /tmp/wireguard/"${ifname}"/peers
 service_mode="$(uci -q get mptun.global.service_mode)"
 #IPRB_disabled="$(uci -q get mptun.IPRB.disabled)"
 IPRB_identity="$(uci -q get mptun.IPRB.identity)"
+IPRB_sub_mode="$(uci -q get mptun.IPRB.sub_mode)"
+[ "${IPRB_sub_mode}" = '' ] && IPRB_sub_mode='classic'
 [ "${service_mode}" != "IPRB" ] && return 0
 #[ "${IPRB_identity}" != "secondary" ] && return 0
 WG_BIN='awg'
@@ -106,7 +108,11 @@ if [ "${ACTION}" = "KEYPAIR-CREATED" -a -n "$(echo "${ifname}" | grep "^mptun")"
     uci -q set mptun.IPRB.state="connected"
     uci -q set mptun.IPRB.lastConnectedTime="$con_time"
     uci commit mptun
+
     notify_IPRB_status
+    if [ "${IPRB_sub_mode}" = 'AstroMesh' ]; then
+        ubus send mptun.connected
+    fi
 fi
 
 if [ "${ACTION}" = "REKEY-TIMEOUT"  -a -n "$(echo "${ifname}" | grep "^mptun")" ]; then

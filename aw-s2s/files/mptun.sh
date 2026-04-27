@@ -17,6 +17,8 @@ use_fw4='0'
 service_mode="$(uci -q get mptun.global.service_mode)"
 [ "${service_mode}" = '' ] && service_mode='classic'
 IPRB_identity="$(uci -q get mptun.IPRB.identity)"
+IPRB_sub_mode="$(uci -q get mptun.IPRB.sub_mode)"
+[ "${IPRB_sub_mode}" = '' ] && IPRB_sub_mode='classic'
 
 notify_IPRB_status() {
     $(curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","push_IPRB_status_to_wb",{}]}')
@@ -228,6 +230,27 @@ set_firewall()
         echo '' >"$FW4_FILE_MPTUN_POST_RULESET"
     fi
 
+    local alllow_restricted_forward
+    local forward_just_deal_DNAT
+    local input_only_mptun_icmp
+
+    if [ "${service_mode}" = 'classic' ] ;then
+        alllow_restricted_forward='1'
+        forward_just_deal_DNAT='1'
+    fi
+
+    if [ "${service_mode}" = 'IPRB' ] ;then
+        if [ "${IPRB_sub_mode}" = "AstroMesh" ] ;then
+            alllow_restricted_forward='1'
+            input_only_mptun_icmp='0'
+        else
+            alllow_restricted_forward='0'
+            # generic IPRB mode, just allowes icmp.
+            input_only_mptun_icmp='1'
+        fi
+        forward_just_deal_DNAT='0'
+    fi
+
     uci set firewall.mptun=zone
     uci set firewall.mptun.name='mptun'
     uci set firewall.mptun.device="${DEV:=mptun0}"
@@ -293,8 +316,19 @@ set_firewall()
         uci set firewall.mptun_forward_rule.target="ACCEPT"
     fi
 
-    # DNAT does not exist in IPRB mode.
-    if [ "${service_mode}" != 'IPRB' ] ;then
+    [ "$exitnode" = "true" -o "$type" = "EXIT" ] && {
+        if [ "${use_fw4}" != '1' ]; then
+            uci set firewall.mptun2wan=rule
+            uci set firewall.mptun2wan.name='mptun to wan'
+            uci set firewall.mptun2wan.src="mptun"
+            uci set firewall.mptun2wan.dest='wan'
+            uci add_list firewall.mptun2wan.proto='all'
+            uci set firewall.mptun2wan.target='ACCEPT'
+            uci set firewall.mptun2wan.enable='1'
+        fi
+    }
+
+    if [ "${alllow_restricted_forward}" = '1' ] ;then
         local rule_target="accept"
         if [ "${use_fw4}" = '1' ]; then
             [ -z "$srcips" -o -z "$destips" ] && rule_target="drop"
@@ -331,8 +365,7 @@ set_firewall()
         uci set firewall.mptun_local_rule.target='DROP'
     else
         uci set firewall.mptun_local_rule.target='ACCEPT'
-        # IPRB mode, just allowes icmp.
-        if [ "${service_mode}" = 'IPRB' ] ;then
+        if [ "${input_only_mptun_icmp}" = '1' ] ;then
             uci -q delete firewall.mptun_local_rule.proto
             uci add_list firewall.mptun_local_rule.proto='icmp'
             for addr in "$v4_addr_list" ;do
@@ -368,23 +401,41 @@ set_firewall()
         uci set firewall.mptun2mptun.dest='mptun'
     }
 
-    [ "$exitnode" = "true" -o "$type" = "EXIT" ] && {
-        uci set firewall.mptun2wan=forwarding
-        uci set firewall.mptun2wan.src='mptun'
-        uci set firewall.mptun2wan.dest='wan'
-    }
-
     [ "$type" = "GATEWAY" ] && {
         ip rule del from all iif mptun0 lookup mptcp_mptun0 2>/dev/null
         ip rule add from all iif mptun0 lookup mptcp_mptun0
     }
-    uci commit firewall
-    /etc/init.d/firewall reload 2>/dev/null
 
     # DNAT does not exist in IPRB mode.
-    if [ "${service_mode}" != 'IPRB' ] ;then
-        [ "${use_fw4}" = '1' ] && echo "insert rule inet fw4 forward_mptun iifname "mptun0" ct status dnat counter $rule_target" >>"$FW4_FILE_MPTUN_POST_RULESET"
+    if [ "${alllow_restricted_forward}" = '1' ] ;then
+        local options=""
+        if [ "${forward_just_deal_DNAT}" = '1' ] ;then
+            options="${options} ct status dnat"
+        else
+            local src_set=""
+            local dest_set=""
+            for i in $srcips;do
+                src_set="${src_set:+${src_set},}$i"
+            done
+            for i in $destips;do
+                dest_set="${dest_set:+${dest_set},}$i"
+            done
+            if [ -n "$src_set" -a -n "$dest_set" ]; then
+               options="${options} ip saddr {$src_set} ip daddr {$dest_set}"
+            fi
+        fi
+        [ "${use_fw4}" = '1' ] && echo "insert rule inet fw4 forward_mptun iifname "mptun0" $options counter $rule_target" >>"$FW4_FILE_MPTUN_POST_RULESET"
     fi
+
+    [ "$exitnode" = "true" -o "$type" = "EXIT" ] && {
+        if [ "${use_fw4}" = '1' ]; then
+            echo "insert rule inet fw4 forward_mptun iifname "mptun0" counter jump accept_to_wan" >>"$FW4_FILE_MPTUN_POST_RULESET"
+        fi
+    }
+
+
+    uci commit firewall
+    /etc/init.d/firewall reload 2>/dev/null
 }
 
 set_dns() {
