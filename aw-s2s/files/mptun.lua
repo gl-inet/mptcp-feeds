@@ -1072,16 +1072,40 @@ function M.AW_get_global_summary(params)
                 -- In IPRB, if sub_mode is not classic, it will be AstroMesh
                 result.mode = "AstroMesh"
             else
-                result.mode = ""
+                result.mode = ret.status.sub_mode or ''
             end
         end
-        if ret.mode == 'classic' and ret.enabled == false then
-            result.mode = ""
+        if ret.mode == 'classic' then
+            if ret.enabled == true then
+                result.mode = 'classic'
+            elseif sub_mode == 'AstroMesh' then
+                result.mode = "AstroMesh"
+            elseif sub_mode == 'classic' then
+                result.mode = "IPRB"
+            else
+                result.mode = ""
+            end
         end
     end
     return result
 end
 
+local function __push_global_summary_to_wb()
+    local result = M.AW_get_global_summary()
+    ubus.call('gl-session', 'notify', { name = "mptun.AW_global_summary", data = result })
+end
+
+--[[
+    @method-type: call
+    @method-name: push_global_summary_to_wb
+    @method-desc: push AW global summary to websocket.
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "push_global_summary_to_wb",{}]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": { }}
+--]]
+function M.push_global_summary_to_wb(params)
+    __push_global_summary_to_wb()
+    return {}
+end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 local function get_network_id()
     local c = uci.cursor()
@@ -1140,6 +1164,34 @@ local function send_net_ctrl_msg(active)
     end
 end
 
+local function IPRB_sub_mode_is_inited()
+    local c = uci.cursor()
+    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
+    if sub_mode == 'classic' or sub_mode == 'AstroMesh' then
+        return true
+    else
+        return false
+    end
+end
+local function IPRB_sub_mode_init(params)
+    if IPRB_sub_mode_is_inited() then
+        return { err_code = -1, err_msg = "IPRB sub_mode has been inited!" }
+    end
+
+    local sub_mode = params.sub_mode or ''
+    if sub_mode ~= 'classic' and sub_mode ~= 'AstroMesh' then
+        return { err_code = -2, err_msg = "invalid sub_mode!" }
+    end
+
+    local opt = {}
+    opt.sub_mode = sub_mode
+    set_IPRB_option(opt)
+    debug_event_to_file("sub_mode " .. opt.sub_mode .. " inited ~~~~")
+
+    __push_global_summary_to_wb()
+
+    return { err_code = 0 }
+end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 local function __start_service(params)
     if __is_meet_startup_conditions() == false then
@@ -1442,6 +1494,7 @@ function M.reset(params)
             c:commit("mptun")
 
             push_status_to_wb()
+            __push_global_summary_to_wb()
             return {}
         elseif res.msg ~= nil then
             return { err_code = -3, err_msg = res.msg }
@@ -1471,6 +1524,10 @@ function M.get_started(params)
         end
     else
         return { err_code = -1, err_msg = "invalid params !" }
+    end
+    local ret = IPRB_sub_mode_init({ sub_mode = "classic" })
+    if ret.err_code ~= 0 then
+        return ret
     end
     local opt = {
         attempt_to_be = attempt_to_be
@@ -1826,6 +1883,8 @@ function M.AW_net_stoped_by_cloud()
         debug_event_to_file(" subrouter allready reset !!")
         ubus.send('mptun.removed', {})
     end
+    push_status_to_wb()
+    __push_global_summary_to_wb()
 end
 
 --[[
@@ -1931,6 +1990,22 @@ function M.am_get_net_info()
     end
 end
 
+--[[
+    @method-type: call
+    @method-name: am_init
+    @method-desc: initialize AstroMesh mode.
+    @out number     ?err_code               Error Code
+    @out string     ?err_msg                Error Message
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_init",{}]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
+--]]
+function M.am_init(params)
+    local ret = IPRB_sub_mode_init({ sub_mode = "AstroMesh" })
+    if ret.err_code ~= 0 then
+        return ret
+    end
+    return {}
+end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 --[[
     @method-type: call
@@ -2272,8 +2347,10 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.am_exit_remote_net(params)
-    if not check_AM_has_right_identity(params and params.identity) then
-        return { err_code = -2, err_msg = "invalid identity !" }
+    local c = uci.cursor()
+    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
+    if sub_mode ~= 'AstroMesh' and sub_mode ~= '' then
+        return { err_code = -2, err_msg = "invalid sub_mode !" }
     end
     debug_event_to_file(tostring(params.identity) .. " is resetting ~~")
     return M.reset({})
