@@ -104,6 +104,31 @@ local function is_valid_dynamic_code(dynamic_code)
     return type(dynamic_code) == 'string' and
         string.match(dynamic_code, valid_query_and_body_params["dynamicCode"]) == dynamic_code
 end
+local function to_network_cidr(ip, mask)
+    if type(ip) ~= 'string' then
+        return nil
+    end
+    local a, b, c, d = ip:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+    local p = tonumber(mask) or 32
+    if a == nil or p < 0 or p > 32 then
+        return nil
+    end
+
+    a, b, c, d = tonumber(a), tonumber(b), tonumber(c), tonumber(d)
+    if a > 255 or b > 255 or c > 255 or d > 255 then
+        return nil
+    end
+
+    local ip_u32 = a * 16777216 + b * 65536 + c * 256 + d
+    local block = 2 ^ (32 - p)
+    local net_u32 = math.floor(ip_u32 / block) * block
+    local na = math.floor(net_u32 / 16777216) % 256
+    local nb = math.floor(net_u32 / 65536) % 256
+    local nc = math.floor(net_u32 / 256) % 256
+    local nd = net_u32 % 256
+
+    return string.format("%d.%d.%d.%d/%d", na, nb, nc, nd, p)
+end
 local function is_valid_ipv4(ip)
     if type(ip) ~= 'string' then
         return false
@@ -389,11 +414,13 @@ local function set_IPRB_option(opt)
     c:set("mptun", "IPRB", "service_instance")
     if type(opt) == 'table' then
         for k, v in pairs(opt) do
-            if v and tostring(v) ~= '' then
+            if (type(v) == "string" or type(v) == "number") and tostring(v) ~= '' then
                 local old_v = c:get("mptun", "IPRB", tostring(k)) or " "
                 if tostring(old_v) ~= tostring(v) then
                     c:set("mptun", "IPRB", tostring(k), tostring(v))
                 end
+            elseif type(v) == "table" then
+                c:set("mptun", "IPRB", tostring(k), v)
             end
         end
     end
@@ -1424,7 +1451,7 @@ function M.set_use_exit_node(params)
     end
 end
 
-function M.report_net_resource(params)
+local function __report_net_resource(params)
     local resource = {}
     if params == nil or params.resource == nil or type(params.resource) ~= "table" then
         return { err_code = -1, err_msg = "invalid params !" }
@@ -1462,6 +1489,41 @@ function M.report_net_resource(params)
     end
 end
 
+function M.report_net_resource(params)
+    return __report_net_resource(params)
+end
+
+local function report_local_accessible_net_resource()
+    local c = uci.cursor()
+    local if_list = c:get("mptun", "IPRB", "accessiable_ifname") or ''
+    local accessiable_ifname_list = {}
+    local resources = {}
+    if type(if_list) == "table" then
+        for _, v in pairs(if_list) do
+            if type(v) == "string" and v ~= '' then
+                table.insert(accessiable_ifname_list, v)
+            end
+        end
+    elseif type(if_list) == "string" and if_list ~= '' then
+        table.insert(accessiable_ifname_list, if_list)
+    end
+
+    for _, ifname in pairs(accessiable_ifname_list) do
+        local s = ubus.call("network.interface." .. ifname, "status")
+        if s and s['ipv4-address'] then
+            for _, info in pairs(s['ipv4-address'] or {}) do
+                local network = to_network_cidr(info.address, info.mask)
+                if network ~= nil then
+                    local per_info = {}
+                    per_info.interface_name = ifname
+                    per_info.network = network
+                    table.insert(resources, per_info)
+                end
+            end
+        end
+    end
+    return __report_net_resource({ resource = resources })
+end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 --[[
     @method-type: call
@@ -1994,15 +2056,32 @@ end
     @method-type: call
     @method-name: am_init
     @method-desc: initialize AstroMesh mode.
+    @in string      identity                controller or subrouter
     @out number     ?err_code               Error Code
     @out string     ?err_msg                Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_init",{}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.am_init(params)
+    if type(params) ~= 'table' or type(params.identity) ~= 'string' then
+        return { err_code = -1, err_msg = "invalid params !" }
+    end
+    local identity = params.identity
+    if identity ~= 'controller' and identity ~= 'subrouter' then
+        return { err_code = -1, err_msg = "invalid params !" }
+    end
     local ret = IPRB_sub_mode_init({ sub_mode = "AstroMesh" })
     if ret.err_code ~= 0 then
         return ret
+    end
+    if identity == "controller" then
+        local accessiable_ifname_list = {}
+        table.insert(accessiable_ifname_list, "lan")
+        local opt = {
+            sub_mode = "AstroMesh",
+            accessiable_ifname = accessiable_ifname_list
+        }
+        set_IPRB_option(opt)
     end
     return {}
 end
@@ -2039,6 +2118,8 @@ function M.am_get_dynamic_code()
         end
 --]]
     end
+    report_local_accessible_net_resource()
+    ngx.sleep(1)
     local opt = {
         ["req_method"] = "POST",
         ["req_path"] = req_path["req_get_access_code"]
