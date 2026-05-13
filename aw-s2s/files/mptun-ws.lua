@@ -9,4 +9,8 @@ function M.AW_global_summary()
     local mod = dofile('/usr/lib/oui-httpd/rpc/mptun')
     return mod.AW_get_global_summary()
 end
+function M.push_notification_msg()
+    local mod = dofile('/usr/lib/oui-httpd/rpc/mptun')
+    return mod.AW_push_notification_msg()
+end
 return M

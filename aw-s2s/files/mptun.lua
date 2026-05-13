@@ -86,6 +86,11 @@ local pre_req_func = {}
 local creationChannel = {
     ["AstroMesh"] = "001"
 }
+local PATH_AW_RUN_INFO = "/tmp/run/aw_tmp_dir"
+local PATH_AW_NOTICE_INFO = PATH_AW_RUN_INFO .. "/notice_info"
+local notice_type = {
+    "resource_net_conflict"
+}
 local am_key_rename_map = {
     -- example:
     -- IPv6Addr = 'ipv6_addr'
@@ -1132,6 +1137,71 @@ end
 function M.push_global_summary_to_wb(params)
     __push_global_summary_to_wb()
     return {}
+end
+local function AW_get_notice_msg()
+    local function get_notice_info_from_file()
+        local notice_msg_list = {}
+        local notice_msg_dir = PATH_AW_NOTICE_INFO
+        local notice_type_list = notice_type
+
+        if type(notice_msg_dir) ~= 'string' or notice_msg_dir == '' then
+            return notice_msg_list
+        end
+
+        if type(notice_type_list) ~= 'table' then
+            return notice_msg_list
+        end
+
+        -- Ensure notice_msg_dir is an existing directory before reading files in it.
+        if not fs.access(string.format('%s/.', notice_msg_dir)) then
+            return notice_msg_list
+        end
+
+        for _, msg_type in ipairs(notice_type_list) do
+            if type(msg_type) == 'string' and msg_type ~= '' then
+                local msg_file = string.format('%s/%s', notice_msg_dir, msg_type)
+                local raw = utils.readfile(msg_file)
+                if type(raw) == 'string' and raw ~= '' then
+                    local ok, data = pcall(cjson.decode, raw)
+                    if ok and type(data) == 'table' then
+                        table.insert(notice_msg_list, {
+                            msg_type = msg_type,
+                            data = data
+                        })
+                    end
+                end
+            end
+        end
+
+        return notice_msg_list
+    end
+
+    local notice_info_list = {}
+    local ret = get_notice_info_from_file()
+
+    if type(ret) == 'table' and #ret > 0 then
+        for _, notice_info in ipairs(ret) do
+            table.insert(notice_info_list, notice_info)
+        end
+    end
+
+    return notice_info_list
+end
+
+local function __AW_push_notification_msg()
+    local c = uci.cursor()
+    local service_mode = c:get("mptun", "global", "service_mode") or ''
+    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
+
+    if service_mode ~= 'IPRB' or sub_mode ~= 'AstroMesh' then
+        return
+    end
+    local notice_msg_list = AW_get_notice_msg() or {}
+    ubus.call('gl-session', 'notify', { name = "mptun.push_notification_msg", data = notice_msg_list })
+end
+
+function M.AW_push_notification_msg(params)
+    return __AW_push_notification_msg()
 end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 local function get_network_id()

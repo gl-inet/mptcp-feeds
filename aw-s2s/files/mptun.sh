@@ -11,6 +11,9 @@ DNS_MARK=$(uci -q get mptun.global.dns_mark || echo 0x8)
 AW_TMP_DIR="/tmp/run/aw_tmp_dir"
 mkdir -p ${AW_TMP_DIR}
 
+PATH_AW_NOTICE_INFO="${AW_TMP_DIR}/notice_info"
+mkdir -p ${PATH_AW_NOTICE_INFO}
+
 use_fw4='0'
 [ -n "$(which fw4)" ] && use_fw4='1'
 
@@ -22,6 +25,65 @@ IPRB_sub_mode="$(uci -q get mptun.IPRB.sub_mode)"
 
 notify_IPRB_status() {
     $(curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","push_IPRB_status_to_wb",{}]}')
+}
+
+push_aw_notice_info() {
+    $(curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","AW_push_notification_msg",{}]}')
+}
+
+is_conflict_resource() {
+    local route_ip="$1"
+    local route_line=""
+
+    [ -z "$route_ip" ] && {
+        echo "0"
+        return 0
+    }
+
+    route_line="$(ip route get "$route_ip" 2>/dev/null | head -n 1)"
+    [ -z "$route_line" ] && {
+        echo "0"
+        return 0
+    }
+
+    echo "$route_line" | grep -q ' via ' && {
+        echo "0"
+        return 0
+    }
+
+    echo "$route_line" | grep -Eq ' dev mptun[^ ]*' && {
+        echo "0"
+        return 0
+    }
+
+    echo "1"
+}
+
+write_resource_net_conflict_notice() {
+    local conflict_resource_list="$1"
+    local notice_file="${PATH_AW_NOTICE_INFO}/resource_net_conflict"
+    local item net_json=""
+
+    if [ -z "$conflict_resource_list" ]; then
+        rm -f "$notice_file"
+        return 0
+    fi
+
+    for item in $(echo "$conflict_resource_list" | sed 's/,/ /g'); do
+        [ -z "$item" ] && continue
+        net_json="${net_json}${net_json:+, }\"$item\""
+    done
+
+    cat >"$notice_file" <<EOF
+{
+    "net": [${net_json}]
+}
+EOF
+}
+
+clean_resource_net_conflict_notice() {
+    local notice_file="${PATH_AW_NOTICE_INFO}/resource_net_conflict"
+    rm -f "$notice_file"
 }
 
 gateway_set_tcptun() {
@@ -537,11 +599,14 @@ gen_nft_script() {
     local mptun_flow_mark="$(printf '0x%x' $((tcpmark | lanmark)))"
     local mptun_flow_mark_mask_inv="$(printf '0x%x' $((~mptun_flow_mark & 0xffffffff)))"
 
-    local item mproxy_set=""
+    local item mproxy_set="" conflict_resource_list=""
     for item in $(echo "$udp_route_ips" | sed 's/,/ /g'); do
         if [ "$item" = "0.0.0.0/0" -o "$item" = "::/0" ]; then
             logger -t mptun "ignore 0.0.0.0/0 route"
         else
+            if [ "$(is_conflict_resource "$item")" = "1" ]; then
+                conflict_resource_list="${conflict_resource_list}${conflict_resource_list:+,}${item}"
+            fi
             if [ -z "$mproxy_set" ]; then
                 mproxy_set="$item"
             else
@@ -549,6 +614,9 @@ gen_nft_script() {
             fi
         fi
     done
+
+    write_resource_net_conflict_notice "$conflict_resource_list"
+    push_aw_notice_info
 
     #Prevent mproxy_set from being empty and causing nft script exception
     [ -z "$mproxy_set" ] && mproxy_set='224.0.0.1'
@@ -621,6 +689,7 @@ set_ipt_script() {
     local tcptun_is_exist="$5"
     local tcpmark="$6"
     local udpmark="$7"
+    local conflict_resource_list=""
 
     local use_exit=$(uci -q get mptun.global.use_exit)
 
@@ -630,9 +699,15 @@ set_ipt_script() {
         if [ "$ip" = "0.0.0.0/0" ];then
             logger -t mptun "ignore 0.0.0.0/0 route"
         else
+            if [ "$(is_conflict_resource "$ip")" = "1" ]; then
+                conflict_resource_list="${conflict_resource_list}${conflict_resource_list:+,}${ip}"
+            fi
             ipset add mproxy_set $ip
         fi
     done
+
+    write_resource_net_conflict_notice "$conflict_resource_list"
+    push_aw_notice_info
 
     local private_ip="192.168.0.0/16 10.0.0.0/8 172.16.0.0/12"
     ipset create mproxy_privateip hash:net 2>/dev/null
@@ -892,6 +967,8 @@ mptun_clean() {
     clean_p2p_info
     remove_dns
     sync
+
+    clean_resource_net_conflict_notice
 }
 
 get_wan_name() {
