@@ -1138,7 +1138,7 @@ function M.push_global_summary_to_wb(params)
     __push_global_summary_to_wb()
     return {}
 end
-local function AW_get_notice_msg()
+local function __AW_get_notice_msg()
     local function get_notice_info_from_file()
         local notice_msg_list = {}
         local notice_msg_dir = PATH_AW_NOTICE_INFO
@@ -1196,10 +1196,13 @@ local function __AW_push_notification_msg()
     if service_mode ~= 'IPRB' or sub_mode ~= 'AstroMesh' then
         return
     end
-    local notice_msg_list = AW_get_notice_msg() or {}
+    local notice_msg_list = __AW_get_notice_msg() or {}
     ubus.call('gl-session', 'notify', { name = "mptun.push_notification_msg", data = notice_msg_list })
 end
 
+function M.AW_get_notice_msg(params)
+    return __AW_get_notice_msg()
+end
 function M.AW_push_notification_msg(params)
     return __AW_push_notification_msg()
 end
