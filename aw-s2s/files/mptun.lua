@@ -1069,10 +1069,14 @@ function M.get_AW_status(params)
         ret.enabled = (IPRB_status.status.enabled == '1' and global_enabled == true)
         ret.mode = current_mode
         ret.status = IPRB_status.status
-    else
+    elseif current_mode == 'classic' then
         ret.enabled = global_enabled
         ret.mode = 'classic'
         ret.status = { enable = global_enabled }
+    else
+        ret.enabled = false
+        ret.mode = ''
+        ret.status = {}
     end
     return ret
 end
@@ -1090,11 +1094,14 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"enabled":true,"mode":"AstroMesh"}}
 --]]
 function M.AW_get_global_summary(params)
-    local result = {}
     local ret = M.get_AW_status()
     local c = uci.cursor()
     local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
-    if type(ret) == 'table' then
+    local result = {
+        enabled = false,
+        mode = ''
+    }
+    if type(ret) == 'table' and type(ret.mode) == "string" and ret.mode ~= '' then
         result.enabled = ret.enabled
         result.mode = ret.mode
         if ret.mode == 'IPRB' then
@@ -1107,16 +1114,12 @@ function M.AW_get_global_summary(params)
                 result.mode = ret.status.sub_mode or ''
             end
         end
-        if ret.mode == 'classic' then
-            if ret.enabled == true then
-                result.mode = 'classic'
-            elseif sub_mode == 'AstroMesh' then
-                result.mode = "AstroMesh"
-            elseif sub_mode == 'classic' then
-                result.mode = "IPRB"
-            else
-                result.mode = ""
-            end
+    else
+        -- if get_AW_status fails, fallback to a simple judgment based on sub_mode, which is not accurate but better than nothing.
+        if sub_mode == 'AstroMesh' then
+            result.mode = "AstroMesh"
+        elseif sub_mode == 'classic' then
+            result.mode = "IPRB"
         end
     end
     return result
@@ -1742,11 +1745,14 @@ local function parse_response_identity_verification(resp)
 
     local net_id, is_primary, is_active, is_use_exit, creation_channel
     local is_IPRB = false
+    local is_classic = false
     local parse_fail = false
     if res_table ~= nil and res_table.info ~= nil and type(res_table.info) == "table" then
         if res_table.info.networkPlan ~= nil and type(res_table.info) == "string" then
             if res_table.info.networkPlan:match("^IPRB(_%w+)?$") ~= nil then
                 is_IPRB = true
+            else
+                is_classic = true
             end
         end
         if res_table.info.planCode ~= nil and type(res_table.info.planCode) == "string" then
@@ -1754,6 +1760,8 @@ local function parse_response_identity_verification(resp)
             if code then
                 if code == 7 or code == 8 then
                     is_IPRB = true
+                else
+                    is_classic = true
                 end
             end
         end
@@ -1789,7 +1797,7 @@ local function parse_response_identity_verification(resp)
     if parse_fail == true then
         return -2
     end
-    local mode = "classic"
+    local mode = ""
     local identity = ''
     local active = ''
     local use_exit = ''
@@ -1816,6 +1824,8 @@ local function parse_response_identity_verification(resp)
         else
             sub_mode = "classic"
         end
+    elseif is_classic == true then
+        mode = "classic"
     end
 
     return {
@@ -1868,6 +1878,8 @@ local function snoop_response_identity_verification(resp)
             set_IPRB_option(opt)
 
             push_status_to_wb()
+        elseif ret.mode == 'classic' then
+            set_service_mode(tostring(ret.mode))
         end
     end
 end
