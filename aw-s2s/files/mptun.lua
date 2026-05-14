@@ -971,6 +971,7 @@ local function __get_IPRB_status(params)
     else
         status.attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
     end
+    status.use_exit = c:get("mptun", "IPRB", "use_exit") or '1'
     return { status = status }
 end
 
@@ -2360,10 +2361,10 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"mode":"all"}}
 --]]
 function M.am_sub_get_route_policy()
-    local tmp_ret = M.get_node_info()
-    if type(tmp_ret) == 'table' and type(tmp_ret.info) == 'table' and tmp_ret.info.err_code == 0 then
-        if type(tmp_ret.info.use_exit) == 'string' then
-            if tmp_ret.info.use_exit == '1' then
+    local tmp_ret = M.get_AW_status()
+    if type(tmp_ret) == 'table' and type(tmp_ret.mode) == 'string' and tmp_ret.mode == 'IPRB' and type(tmp_ret.status) == 'table' then
+        if type(tmp_ret.status.use_exit) == 'string' then
+            if tmp_ret.status.use_exit == '1' then
                 return { mode = 'all' }
             else
                 return { mode = 'sub' }
@@ -2371,13 +2372,7 @@ function M.am_sub_get_route_policy()
         end
     end
 
-    local c = uci.cursor()
-    local use_exit = c:get("mptun", "IPRB", "use_exit") or ''
-    if use_exit == '0' then
-        return { mode = 'sub' }
-    else
-        return { mode = 'all' }
-    end
+    return { err_code = -1, err_msg = "fail to get route policy !" }
 end
 
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
