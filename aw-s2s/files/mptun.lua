@@ -2228,16 +2228,24 @@ function M.am_get_dynamic_code()
         end
 --]]
     end
-    report_local_accessible_net_resource()
-    ngx.sleep(1)
-    local opt = {
+    local req_opt = {
         ["req_method"] = "POST",
         ["req_path"] = req_path["req_get_access_code"]
     }
-    local res = __raw_request(opt)
+    local res = __raw_request(req_opt)
     if res.err_code ~= 0 then
         return res
     else
+        --If execution reaches this point, it indicates that communication is functioning normally, so try reporting the resource.
+        --Temporarily implement it here.
+        local resource_reported = c:get("mptun", "IPRB", "resource_reported") == '1'
+        if resource_reported ~= true then
+            local ret = report_local_accessible_net_resource()
+            if type(ret) == 'table' and ret.err_code == nil then
+                c:set("mptun", "IPRB", "resource_reported", "1")
+                c:commit("mptun")
+            end
+        end
         local ok = false
         local res_table
         if res and res.body then
