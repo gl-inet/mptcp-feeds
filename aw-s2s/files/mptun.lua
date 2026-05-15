@@ -95,6 +95,16 @@ local am_key_rename_map = {
     -- example:
     -- IPv6Addr = 'ipv6_addr'
 }
+local am_specific_error_code = {
+    -- example:
+    -- [12345] = { err_code = -12345, err_msg = "custom error message" }
+    [50003225] = { err_code = 301, err_msg = "The device has been added to an existing network." },
+    [50003158] = { err_code = 302, err_msg = "Calling cloud APIs too frequently" },
+    [50000007] = { err_code = 303, err_msg = "The system time difference is too large." },
+    [50000008] = { err_code = 304, err_msg = "Invalid signature information." },
+    [50003229] = { err_code = 305, err_msg = "The token information is not present in the cloud. Please check if the cloud service is online normally." },
+    [10000006] = { err_code = 306, err_msg = "Parameter error" }
+}
 
 local function debug_event_to_file(msg)
     local c = uci.cursor()
@@ -2075,6 +2085,15 @@ local function am_decode_info_from_resp(res, expected_type)
         return { err_code = -100, err_msg = "empty response!" }
     end
 
+    if res_table.code ~= nil and type(res_table.code) == 'number' then
+        local specific_error = am_specific_error_code[res_table.code]
+        if type(specific_error) == 'table' then
+            return {
+                err_code = specific_error.err_code,
+                err_msg = specific_error.err_msg
+            }
+        end
+    end
     if expected_type ~= nil and type(res_table.info) ~= expected_type then
         return { err_code = -100, err_msg = "empty response!" }
     end
