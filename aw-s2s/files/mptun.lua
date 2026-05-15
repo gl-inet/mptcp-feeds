@@ -2031,15 +2031,20 @@ end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 function M.AW_net_stoped_by_cloud()
     local c = uci.cursor()
+    local service_mode = c:get("mptun", "global", "service_mode") or ''
     local be_kicked_out = c:get("mptun", "IPRB", "be_kicked_out") == '1'
     local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
     local attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
-    debug_event_to_file(" into ---- subrouter allready reset !!" ..
+    debug_event_to_file(" into AW_net_stoped_by_cloud: service_mode: " .. service_mode ..
         " be_kicked_out: " .. tostring(be_kicked_out) .. " sub_mode: " .. sub_mode .. " attempt_to_be: " .. attempt_to_be)
     if be_kicked_out and sub_mode == 'AstroMesh' and attempt_to_be == 'secondary' then
         M.reset()
         debug_event_to_file(" subrouter allready reset !!")
         ubus.send('mptun.removed', {})
+    end
+    if service_mode == 'classic' then
+        c:delete("mptun", "global", "service_mode")
+        c:commit("mptun")
     end
     push_status_to_wb()
     __push_global_summary_to_wb()

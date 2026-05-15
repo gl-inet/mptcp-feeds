@@ -960,12 +960,19 @@ clean_udptun() {
 clean_p2p_info(){
     [ -n "$(ps|grep gl-p2p-daemon|grep -v grep)" ] && kill $(pgrep gl-p2p-daemon) 2>/dev/null
 }
+do_mode_specific_cleanup() {
+    if [ "${service_mode}" = "classic" ]; then
+        uci -q delete mptun.global.service_mode
+        uci commit mptun
+    fi
+}
 
 mptun_clean() {
     clean_proxy
     clean_udptun
     clean_p2p_info
     remove_dns
+    do_mode_specific_cleanup
     sync
 
     clean_resource_net_conflict_notice
