@@ -16,6 +16,11 @@ set_IPRB_sub_mode() {
     uci commit mptun
 }
 
+clear_resource_reported() {
+    uci -q delete mptun.IPRB.resource_reported
+    uci commit mptun
+}
+
 dns_mark="$(uci -q get mptun.global.dnsmark)"
 [ -z "$dns_mark" ] && {
     uci -q set mptun.global.dnsmark='0x8'
@@ -43,6 +48,8 @@ uci commit mptun
     uci set firewall.dns_over_guest.mark="!$dns_mark/$dns_mark"
 
 set_IPRB_sub_mode
+
+clear_resource_reported
 
 uci commit firewall
 

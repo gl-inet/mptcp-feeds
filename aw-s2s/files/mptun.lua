@@ -1892,6 +1892,19 @@ local function snoop_response_identity_verification(resp)
         elseif ret.mode == 'classic' then
             set_service_mode(tostring(ret.mode))
         end
+        --Temporarily implement it here.
+        c:load("mptun")
+        local tmp_service_mode = c:get("mptun", "global", "service_mode") or ''
+        local tmp_sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
+        local tmp_identity = c:get("mptun", "IPRB", "identity") or ''
+        local resource_reported = c:get("mptun", "IPRB", "resource_reported") == '1'
+        if tmp_service_mode == 'IPRB' and tmp_sub_mode == 'AstroMesh' and tmp_identity == 'primary' and resource_reported ~= true then
+            local tmp_ret = report_local_accessible_net_resource()
+            if type(tmp_ret) == 'table' and tmp_ret.err_code == nil then
+                c:set("mptun", "IPRB", "resource_reported", "1")
+                c:commit("mptun")
+            end
+        end
     end
 end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
