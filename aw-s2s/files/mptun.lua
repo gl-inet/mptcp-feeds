@@ -1692,7 +1692,20 @@ local function deal_network_event_newaddr(event_info)
         return {}
     end
 
-    return report_local_accessible_net_resource()
+    local c = uci.cursor()
+    local tmp_service_mode = c:get("mptun", "global", "service_mode") or ''
+    local tmp_sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
+    local tmp_identity = c:get("mptun", "IPRB", "identity") or ''
+    if tmp_service_mode == 'IPRB' and tmp_sub_mode == 'AstroMesh' then
+        if tmp_identity == 'primary' then
+            report_local_accessible_net_resource()
+            return {}
+        elseif tmp_identity == 'secondary' then
+            -- Temporary implementation: reconnect to force a recheck for conflicts.
+            __start_connect({})
+            return {}
+        end
+    end
 end
 
 set_network_event_deal_func("new address", deal_network_event_newaddr)
