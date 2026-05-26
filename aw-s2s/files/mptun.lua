@@ -105,6 +105,24 @@ local am_specific_error_code = {
     [50003229] = { err_code = 305, err_msg = "The token information is not present in the cloud. Please check if the cloud service is online normally." },
     [10000006] = { err_code = 306, err_msg = "Parameter error" }
 }
+local network_event_type = {
+    [10] = { type = "new address", deal_func = nil }
+}
+
+local function set_network_event_deal_func(event_type, deal_func)
+    if type(event_type) ~= 'string' or event_type == '' or type(deal_func) ~= 'function' then
+        return false
+    end
+
+    for _, event in pairs(network_event_type) do
+        if type(event) == 'table' and event.type == event_type then
+            event.deal_func = deal_func
+            return true
+        end
+    end
+
+    return false
+end
 
 local function debug_event_to_file(msg)
     local c = uci.cursor()
@@ -1580,11 +1598,11 @@ function M.report_net_resource(params)
     return __report_net_resource(params)
 end
 
-local function report_local_accessible_net_resource()
+local function get_accessiable_ifname_list()
     local c = uci.cursor()
     local if_list = c:get("mptun", "IPRB", "accessiable_ifname") or ''
     local accessiable_ifname_list = {}
-    local resources = {}
+
     if type(if_list) == "table" then
         for _, v in pairs(if_list) do
             if type(v) == "string" and v ~= '' then
@@ -1595,6 +1613,12 @@ local function report_local_accessible_net_resource()
         table.insert(accessiable_ifname_list, if_list)
     end
 
+    return accessiable_ifname_list
+end
+
+local function report_local_accessible_net_resource()
+    local accessiable_ifname_list = get_accessiable_ifname_list()
+    local resources = {}
     for _, ifname in pairs(accessiable_ifname_list) do
         local s = ubus.call("network.interface." .. ifname, "status")
         if s and s['ipv4-address'] then
@@ -1610,6 +1634,80 @@ local function report_local_accessible_net_resource()
         end
     end
     return __report_net_resource({ resource = resources })
+end
+local function get_interface_by_device(device)
+    if type(device) ~= 'string' or device == '' then
+        return nil
+    end
+
+    local dump = ubus.call("network.interface", "dump", {})
+    local interfaces = dump and dump.interface
+    if type(interfaces) ~= 'table' then
+        return nil
+    end
+
+    for _, item in ipairs(interfaces) do
+        if type(item) == 'table' and type(item.interface) == 'string' then
+            if item.l3_device == device then
+                return item.interface
+            end
+        end
+    end
+
+    return nil
+end
+
+local function deal_network_event_newaddr(event_info)
+    if type(event_info) ~= 'table' then
+        return {}
+    end
+
+    local code = tonumber(event_info.event_code)
+    if code ~= 10 then
+        return {}
+    end
+
+    local ip_address = event_info.ip_address
+    local prefixlen = tonumber(event_info.prefixlen)
+    local device = event_info.device
+
+    if type(ip_address) ~= 'string' or ip_address == '' or prefixlen == nil or type(device) ~= 'string' or device == '' then
+        return {}
+    end
+
+    local ifname = get_interface_by_device(device)
+    if type(ifname) ~= 'string' or ifname == '' then
+        return {}
+    end
+
+    local accessiable_ifname_list = get_accessiable_ifname_list()
+    local allowed = false
+    for _, v in pairs(accessiable_ifname_list) do
+        if v == ifname then
+            allowed = true
+            break
+        end
+    end
+    if not allowed then
+        return {}
+    end
+
+    return report_local_accessible_net_resource()
+end
+
+set_network_event_deal_func("new address", deal_network_event_newaddr)
+
+local function deal_network_event(event_info)
+    local code = tonumber(event_info and event_info.event_code)
+    local event = code and network_event_type[code]
+    if not event then
+        return {}
+    end
+    if type(event.deal_func) == 'function' then
+        return event.deal_func(event_info)
+    end
+
+    return {}
 end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 --[[
@@ -2037,6 +2135,8 @@ function M.report_event_to_mptun(params)
                 end
             end
         end
+    elseif event_class == 'network' then
+        deal_network_event(event_info)
     end
     return {}
 end
