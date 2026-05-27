@@ -1696,14 +1696,19 @@ local function deal_network_event_newaddr(event_info)
     local tmp_service_mode = c:get("mptun", "global", "service_mode") or ''
     local tmp_sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
     local tmp_identity = c:get("mptun", "IPRB", "identity") or ''
+    local tmp_disabled = c:get("mptun", "IPRB", "disabled") or '0'
     if tmp_service_mode == 'IPRB' and tmp_sub_mode == 'AstroMesh' then
         if tmp_identity == 'primary' then
             report_local_accessible_net_resource()
             return {}
         elseif tmp_identity == 'secondary' then
             -- Temporary implementation: reconnect to force a recheck for conflicts.
-            __start_connect({})
-            return {}
+            if tmp_disabled ~= '1' then
+                ngx.timer.at(2.0, function()
+                    ngx.pipe.spawn({ "/etc/init.d/mptun", "start" }):wait()
+                end)
+                return {}
+            end
         end
     end
 end
@@ -2310,7 +2315,7 @@ function M.am_init(params)
     if ret.err_code ~= 0 then
         return ret
     end
-    if identity == "controller" then
+    if identity == "controller" or identity == "subrouter" then
         local accessiable_ifname_list = {}
         table.insert(accessiable_ifname_list, "lan")
         local opt = {
