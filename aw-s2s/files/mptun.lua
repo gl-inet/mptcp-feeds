@@ -860,6 +860,11 @@ local function __start_service(params)
     if __is_meet_startup_conditions() == false then
         return { err_code = -4, err_msg = "Startup conditions not met !" }
     end
+    local option = {}
+    option.disabled = '0'
+    option.identity = 'primary'
+    set_IPRB_option(option)
+    push_status_to_wb()
     local resp = send_net_ctrl_msg('start')
     if resp == nil or resp.err_code ~= 0 then
         return { err_code = -1, err_msg = "communicate fail !" }
@@ -877,13 +882,6 @@ local function __start_service(params)
         if res_table.info ~= true then
             return { err_code = -3, err_msg = "set fail !" }
         end
-        --TODO  start()
-        local option = {}
-        option.disabled = '0'
-        option.identity = 'primary'
-        set_IPRB_option(option)
-
-        push_status_to_wb()
         return {}
     else
         return { err_code = -2, err_msg = "response error !" }
@@ -903,12 +901,12 @@ function M.start_service(params)
     return __start_service(params)
 end
 local function __pause_service(params)
-    send_net_ctrl_msg('stop')
     local option = {}
     option.disabled = '1'
     option.identity = 'primary'
     set_IPRB_option(option)
 
+    send_net_ctrl_msg('stop')
     -- TODO stop()
     ngx.timer.at(2.0, function()
         ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
@@ -936,6 +934,11 @@ local function __start_connect(params)
     if __is_meet_startup_conditions() == false then
         return { err_code = -3, err_msg = "Startup conditions not met !" }
     end
+    local option = {}
+    option.disabled = '0'
+    option.identity = 'secondary'
+    set_IPRB_option(option)
+    push_status_to_wb()
     local resp = send_net_ctrl_msg('start')
     if resp == nil or resp.err_code ~= 0 then
         return { err_code = -1, err_msg = "communicate fail !" }
@@ -953,13 +956,6 @@ local function __start_connect(params)
         if res_table.info ~= true then
             return { err_code = -3, err_msg = "set fail !" }
         end
-        --TODO  start()
-        local option = {}
-        option.disabled = '0'
-        option.identity = 'secondary'
-        set_IPRB_option(option)
-
-        push_status_to_wb()
         return {}
     else
         return { err_code = -2, err_msg = "response error !" }
@@ -979,12 +975,11 @@ function M.start_connect(params)
     return __start_connect(params)
 end
 local function __pause_connect(params)
-    send_net_ctrl_msg('stop')
     local option = {}
     option.disabled = '1'
     option.identity = 'secondary'
     set_IPRB_option(option)
-
+    send_net_ctrl_msg('stop')
     -- TODO stop()
     ngx.timer.at(2.0, function()
         ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
