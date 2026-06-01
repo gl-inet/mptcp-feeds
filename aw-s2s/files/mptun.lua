@@ -2295,6 +2295,35 @@ end
 
 --[[
     @method-type: call
+    @method-name: am_get_status
+    @method-desc: Obtain AstroMesh mode related status information.
+    @out string     status.enabled                  enabled or not
+    @out string     status.identity                 identity: controller or subrouter or null
+    @out string     status.state                    state: connecting or connected
+    @out string     status.attempt_to_be            primary or secondary or null. The role temporarily selected by the user on the initial page, will be replaced by the identity field after the actual role is confirmed.
+    @out string     status.be_kicked_out            for subrouter, be kicked out or not
+    @out string     status.is_p2p                   Indicates whether a p2p connection has been established.
+    @out string     status.lastConnectedTime        Timestamp of the last successful tunnel establishment.
+    @out number     ?err_code                       Error Code
+    @out string     ?err_msg                        Error Message
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_get_status",{}]}
+    @out-example: {"id":15,"jsonrpc":"2.0","result":{"status":{"lastConnectedTime":"1769678361","is_p2p":"0","be_kicked_out":"0","attempt_to_be":"secondary","state":"connected","identity":"subrouter","enabled":"1"}}}
+--]]
+function M.am_get_status(params)
+    local IPRB_status = __get_IPRB_status()
+
+    if type(IPRB_status) == 'table' and type(IPRB_status.status) == 'table' and
+        type(IPRB_status.status.identity) == 'string' then
+        if IPRB_status.status.identity == 'primary' then
+            IPRB_status.status.identity = 'controller'
+        elseif IPRB_status.status.identity == 'secondary' then
+            IPRB_status.status.identity = 'subrouter'
+        end
+    end
+    return IPRB_status
+end
+--[[
+    @method-type: call
     @method-name: am_init
     @method-desc: initialize AstroMesh mode.
     @in string      identity                controller or subrouter
