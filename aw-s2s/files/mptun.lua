@@ -2390,7 +2390,10 @@ function M.am_get_dynamic_code()
     end
     local req_opt = {
         ["req_method"] = "POST",
-        ["req_path"] = req_path["req_get_access_code"]
+        ["req_path"] = req_path["req_get_access_code"],
+        ["req_body"] = {
+            ["creationChannel"] = creationChannel["AstroMesh"]
+        }
     }
     local res = __raw_request(req_opt)
     if res.err_code ~= 0 then
