@@ -1000,6 +1000,9 @@ local function __get_IPRB_status(params)
         status.attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
     end
     status.use_exit = c:get("mptun", "IPRB", "use_exit") or '1'
+    if sub_mode == 'AstroMesh' then
+        status.use_exit = c:get("mptun", "IPRB", "am_local_use_exit") or c:get("mptun", "IPRB", "use_exit") or '1'
+    end
     return { status = status }
 end
 
@@ -1974,6 +1977,7 @@ local function snoop_response_identity_verification(resp)
         local current_mode = c:get("mptun", "global", "service_mode") or ""
         if ret.mode == 'IPRB' then
             local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
+            local am_local_use_exit = c:get("mptun", "IPRB", "am_local_use_exit") or ''
             --local attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
             -- If there is a mesh network in the cloud, but it is not configured or initialized as a mesh network locally, then the mesh network needs to be deleted.
             if ret.sub_mode == 'AstroMesh' and current_mode == "" and sub_mode == '' then
@@ -1985,7 +1989,18 @@ local function snoop_response_identity_verification(resp)
             opt.attempt_to_be = tostring(ret.identity)
             opt.active = tostring(ret.active)
             opt.net_id = tostring(ret.net_id)
-            opt.use_exit = tostring(ret.use_exit)
+            if sub_mode == 'AstroMesh' then
+                if am_local_use_exit == '' then
+                    opt.am_local_use_exit = tostring(ret.use_exit)
+                    opt.use_exit = tostring(ret.use_exit)
+                elseif (tostring(am_local_use_exit) == '1' and tostring(ret.use_exit) == '0') then
+                    M.set_use_exit_node({ enabled = true })
+                elseif (tostring(am_local_use_exit) == '0' and tostring(ret.use_exit) == '1') then
+                    M.set_use_exit_node({ enabled = false })
+                end
+            else
+                opt.use_exit = tostring(ret.use_exit)
+            end
 
             -- If the local enabled status is unclear, update it according to the cloud status.
             local disabled = c:get("mptun", "IPRB", "disabled")
@@ -2556,18 +2571,38 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"mode":"all"}}
 --]]
 function M.am_sub_get_route_policy()
-    local tmp_ret = M.get_AW_status()
-    if type(tmp_ret) == 'table' and type(tmp_ret.mode) == 'string' and tmp_ret.mode == 'IPRB' and type(tmp_ret.status) == 'table' then
-        if type(tmp_ret.status.use_exit) == 'string' then
-            if tmp_ret.status.use_exit == '1' then
-                return { mode = 'all' }
-            else
-                return { mode = 'sub' }
-            end
-        end
+    if not check_AM_has_right_identity("subrouter") then
+        return { err_code = -2, err_msg = "invalid identity !" }
+    end
+    local c = uci.cursor()
+    local use_exit = c:get("mptun", "IPRB", "use_exit") or '1'
+    if use_exit == '' then
+        use_exit = '1'
     end
 
-    return { err_code = -1, err_msg = "fail to get route policy !" }
+    local am_local_use_exit = c:get("mptun", "IPRB", "am_local_use_exit") or ''
+    if am_local_use_exit ~= '' then
+        local enabled
+        if (tostring(am_local_use_exit) == '1' and tostring(use_exit) == '0') then
+            enabled = true
+        elseif (tostring(am_local_use_exit) == '0' and tostring(use_exit) == '1') then
+            enabled = false
+        end
+        if enabled ~= nil then
+            ngx.timer.at(0, function(premature)
+                if not premature then
+                    M.set_use_exit_node({ enabled = enabled })
+                end
+            end)
+        end
+        use_exit = am_local_use_exit
+    end
+
+    if use_exit == '0' then
+        return { mode = 'sub' }
+    else
+        return { mode = 'all' }
+    end
 end
 
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
@@ -2580,12 +2615,13 @@ end
     @out number     ?err_code               Error Code
     @out string     ?err_msg                Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_sub_set_route_policy",{"mode":"all"}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": true}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.am_sub_set_route_policy(params)
     if not check_AM_has_right_identity("subrouter") then
         return { err_code = -2, err_msg = "invalid identity !" }
     end
+    local c = uci.cursor()
     local enabled
     if params == nil or type(params.mode) ~= 'string' then
         return { err_code = -1, err_msg = "invalid params !" }
@@ -2599,12 +2635,30 @@ function M.am_sub_set_route_policy(params)
         return { err_code = -1, err_msg = "invalid params !" }
     end
 
+    local old_am_local_use_exit = c:get("mptun", "IPRB", "am_local_use_exit")
+    local option = {}
+    if enabled then
+        option.am_local_use_exit = '1'
+    else
+        option.am_local_use_exit = '0'
+    end
+    --option.identity = 'secondary'
+    set_IPRB_option(option)
+    push_status_to_wb()
     local ret = M.set_use_exit_node({ enabled = enabled })
     if type(ret) == 'table' and ret.err_code ~= nil then
-        return ret
+        if ret.err_code ~= -1 then
+            if old_am_local_use_exit == nil then
+                set_IPRB_option({ am_local_use_exit = '1' })
+            else
+                set_IPRB_option({ am_local_use_exit = old_am_local_use_exit })
+            end
+            push_status_to_wb()
+            return ret
+        end
     end
 
-    return true
+    return {}
 end
 
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
