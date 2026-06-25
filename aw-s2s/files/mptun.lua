@@ -1978,10 +1978,19 @@ local function snoop_response_identity_verification(resp)
         if ret.mode == 'IPRB' then
             local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
             local am_local_use_exit = c:get("mptun", "IPRB", "am_local_use_exit") or ''
-            --local attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
-            -- If there is a mesh network in the cloud, but it is not configured or initialized as a mesh network locally, then the mesh network needs to be deleted.
-            if ret.sub_mode == 'AstroMesh' and current_mode == "" and sub_mode == '' then
+            if ret.sub_mode == 'AstroMesh' and current_mode == "" and sub_mode ~= 'AstroMesh' then
+                debug_event_to_file("reset remote Astromesh net: " .. tostring(ret.sub_mode) ..
+                    " current_mode: " .. tostring(current_mode) .. " sub_mode: " .. tostring(sub_mode))
                 M.reset()
+                return {}
+            elseif ret.sub_mode == 'classic' and current_mode == "" and sub_mode == 'AstroMesh' then
+                -- Temporary implementation: default to controller because the local AstroMesh role
+                -- cannot be determined reliably here after reset.
+                local am_identity = "controller"
+                debug_event_to_file("reset remote IPRB net: " .. tostring(ret.sub_mode) ..
+                    " current_mode: " .. tostring(current_mode) .. " sub_mode: " .. tostring(sub_mode))
+                M.reset()
+                M.am_init({ identity = am_identity })
                 return {}
             end
             local opt = {}
@@ -2383,25 +2392,16 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"dynamic_code":"6AC4521","expiration_remainder":11111111}}
 --]]
 function M.am_get_dynamic_code()
-    local tmp_ret = M.get_node_info()
-
+    M.get_node_info()
     local c = uci.cursor()
+    local current_mode = c:get("mptun", "global", "service_mode") or ''
     local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
     local identity = c:get("mptun", "IPRB", "identity") or ''
-    --local attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
 
-    if type(tmp_ret) == 'table' and type(tmp_ret.info) == 'table' and tmp_ret.info.err_code == 0 then
-        if not (tmp_ret.info.mode == 'IPRB' and sub_mode == 'AstroMesh' and identity == 'primary') then
-            M.reset()
-            ngx.sleep(1)
-        end
-        --[[
-    else
-        if attempt_to_be == 'secondary' or identity == 'secondary' then
-            M.reset()
-            ngx.sleep(1)
-        end
---]]
+    if current_mode == 'IPRB' and sub_mode == 'AstroMesh' and identity == 'secondary' then
+        M.reset()
+        M.am_init({ identity = "controller" })
+        ngx.sleep(1)
     end
     local req_opt = {
         ["req_method"] = "POST",
@@ -2498,9 +2498,14 @@ function M.am_join_net_by_dynamic_code(params)
         return { err_code = -1, err_msg = "invalid params !" }
     end
 
-    local tmp_ret = M.get_node_info()
-    if type(tmp_ret) == 'table' and type(tmp_ret.info) == 'table' and tmp_ret.info.err_code == 0 then
+    M.get_node_info()
+    local c = uci.cursor()
+    local current_mode = c:get("mptun", "global", "service_mode") or ''
+    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
+    if current_mode == 'IPRB' and sub_mode == 'AstroMesh' then
+        local am_identity = "subrouter"
         M.reset()
+        M.am_init({ identity = am_identity })
         ngx.sleep(1)
     end
     local opt = {}
