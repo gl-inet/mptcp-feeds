@@ -1731,17 +1731,7 @@ local function deal_network_event(event_info)
     return {}
 end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: reset
-    @method-desc: reset configuration.
-    @out number     ?err_code   Error Code
-    @out string     ?err_msg    Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "reset",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.reset(params)
-    local c = uci.cursor()
+local function __reset_remote_network()
     local opt = {
         ["req_method"] = "POST",
         ["req_path"] = req_path["req_reset"],
@@ -1754,21 +1744,62 @@ function M.reset(params)
         local res
         ok, res = pcall(cjson.decode, resp.body)
         if ok and res.info ~= nil and type(res.info) == 'boolean' and res.info == true then
-            local current_mode = c:get("mptun", "global", "service_mode")
-            if current_mode == 'IPRB' then
-                c:delete("mptun", "global", "service_mode")
-            end
-            c:delete("mptun", "IPRB")
-            c:commit("mptun")
-
-            push_status_to_wb()
-            __push_global_summary_to_wb()
-            return {}
+            return { err_code = 0 }
         elseif res.msg ~= nil then
             return { err_code = -3, err_msg = res.msg }
         end
     end
     return { err_code = -2, err_msg = "reset fail !" }
+end
+
+local function __clear_local_reset_data()
+    local c = uci.cursor()
+    local current_mode = c:get("mptun", "global", "service_mode")
+    if current_mode == 'IPRB' then
+        c:delete("mptun", "global", "service_mode")
+    end
+    c:delete("mptun", "IPRB")
+    c:commit("mptun")
+
+    push_status_to_wb()
+    __push_global_summary_to_wb()
+    return {}
+end
+
+--[[
+    @method-type: call
+    @method-name: reset
+    @method-desc: reset configuration.
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "reset",{}]}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
+--]]
+function M.reset(params)
+    local c = uci.cursor()
+    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
+    if sub_mode == 'AstroMesh' then
+        -- Special handling for AstroMesh: clear local state unconditionally and notify
+        -- the cloud reset in the background on a best-effort basis.
+        local ok, err = ngx.timer.at(0, function(premature)
+            if not premature then
+                __reset_remote_network()
+            end
+        end)
+        if not ok and err ~= nil then
+            debug_event_to_file("failed to schedule remote reset: " .. tostring(err))
+        end
+        -- Temporary delay to give the background cloud reset a chance to complete
+        -- before local status notifications trigger cloud state synchronization.
+        ngx.sleep(3)
+        return __clear_local_reset_data()
+    end
+
+    local ret = __reset_remote_network()
+    if type(ret) == 'table' and ret.err_code == 0 then
+        return __clear_local_reset_data()
+    end
+    return ret
 end
 
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
