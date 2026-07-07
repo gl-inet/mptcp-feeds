@@ -460,6 +460,29 @@ local function set_IPRB_option(opt)
     c:commit("mptun")
 end
 
+local function set_AM_reseting(enabled, auto_reset)
+    local c = uci.cursor()
+    if enabled == true then
+        c:set("mptun", "IPRB", "service_instance")
+        c:set("mptun", "IPRB", "reseting", "1")
+        if auto_reset == true then
+            c:set("mptun", "IPRB", "auto_reset", "1")
+        else
+            c:delete("mptun", "IPRB", "auto_reset")
+        end
+    else
+        c:delete("mptun", "IPRB", "reseting")
+        c:delete("mptun", "IPRB", "auto_reset")
+    end
+    c:commit("mptun")
+end
+
+local function is_AM_reset_finished()
+    local c = uci.cursor()
+    local reseting = c:get("mptun", "IPRB", "reseting") or ''
+
+    return reseting == ''
+end
 local function net_topology_is_exist()
     for _ = 1, 15 do
         if fs.access('/etc/mptun/mpnet_conf') then
@@ -2018,10 +2041,38 @@ local function snoop_response_identity_verification(resp)
                 -- Temporary implementation: default to controller because the local AstroMesh role
                 -- cannot be determined reliably here after reset.
                 local am_identity = "controller"
-                debug_event_to_file("reset remote IPRB net: " .. tostring(ret.sub_mode) ..
+                debug_event_to_file("reset remote residual AstroMesh state for IPRB sub_mode: " ..
+                    tostring(ret.sub_mode) ..
                     " current_mode: " .. tostring(current_mode) .. " sub_mode: " .. tostring(sub_mode))
-                M.reset()
-                M.am_init({ identity = am_identity })
+                local reset_ret
+                local reset_ok = false
+
+                set_AM_reseting(true, true)
+                reset_ret = __reset_remote_network()
+                if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
+                    set_AM_reseting(false)
+                    debug_event_to_file("failed to reset remote residual AstroMesh state: " ..
+                        tostring(reset_ret and reset_ret.err_msg))
+                    return {}
+                end
+
+                for _ = 1, 3 do
+                    ngx.sleep(1)
+                    if is_AM_reset_finished() then
+                        reset_ok = true
+                        break
+                    end
+                end
+
+                if not reset_ok then
+                    -- Keep auto_reset for a late AW_net_stoped_by_cloud callback.
+                    return {}
+                end
+
+                reset_ret = M.am_init({ identity = am_identity })
+                if type(reset_ret) == 'table' and reset_ret.err_code ~= nil and reset_ret.err_code ~= 0 then
+                    return {}
+                end
                 return {}
             end
             local opt = {}
@@ -2215,20 +2266,82 @@ function M.report_event_to_mptun(params)
 end
 
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
+local function pre_deal_aw_stop_by_cloud()
+    local c = uci.cursor()
+
+    local function read_ctx()
+        return {
+            service_mode = c:get("mptun", "global", "service_mode") or '',
+            identity = c:get("mptun", "IPRB", "identity") or '',
+            be_kicked_out = false,
+            should_clear_local = c:get("mptun", "IPRB", "reseting") == '1',
+            should_send_removed = false,
+            auto_reset = c:get("mptun", "IPRB", "auto_reset") == '1',
+            sub_mode = c:get("mptun", "IPRB", "sub_mode") or '',
+            attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or '',
+        }
+    end
+
+    local ctx = read_ctx()
+
+    -- During auto reset, avoid repopulating local UCI from stale cloud state.
+    if ctx.service_mode == '' and not ctx.should_clear_local then
+        __get_IPRB_status()
+        c:load("mptun")
+        ctx = read_ctx()
+    end
+
+    local resolved_service_mode = ctx.service_mode
+    if ctx.service_mode == "IPRB" then
+        local identity = ctx.identity
+        c:set("mptun", "IPRB", "active", "0")
+        c:set("mptun", "IPRB", "state", "stoped")
+
+        -- get_node_info failure indicates the local role has already lost its cloud-side network membership.
+        local rpc_resp = M.get_node_info()
+        local rpc_err_code = rpc_resp and rpc_resp.err_code and tonumber(rpc_resp.err_code)
+        --Failed to obtain IPRB information; indicates the user has been kicked out of the network.
+        if rpc_err_code ~= nil and rpc_err_code < 0 then
+            if identity == "primary" or identity == "secondary" then
+                c:set("mptun", "IPRB", "attempt_to_be", identity)
+                c:delete("mptun", "IPRB", "identity")
+            end
+            if identity == "secondary" then
+                c:set("mptun", "IPRB", "be_kicked_out", "1")
+                ctx.be_kicked_out = true
+            end
+            c:delete("mptun", "global", "service_mode")
+            c:set("mptun", "IPRB", "state", "unset")
+        end
+        c:commit("mptun")
+        if ctx.be_kicked_out and ctx.sub_mode == 'AstroMesh' then
+            ctx.should_clear_local = true
+        end
+        ctx.should_send_removed = ctx.should_clear_local and not ctx.auto_reset
+    end
+
+    ctx.should_clear_classic = resolved_service_mode ~= "IPRB"
+
+    return ctx
+end
+-- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 function M.AW_net_stoped_by_cloud()
     local c = uci.cursor()
-    local service_mode = c:get("mptun", "global", "service_mode") or ''
-    local be_kicked_out = c:get("mptun", "IPRB", "be_kicked_out") == '1'
-    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
-    local attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
-    debug_event_to_file(" into AW_net_stoped_by_cloud: service_mode: " .. service_mode ..
-        " be_kicked_out: " .. tostring(be_kicked_out) .. " sub_mode: " .. sub_mode .. " attempt_to_be: " .. attempt_to_be)
-    if be_kicked_out and sub_mode == 'AstroMesh' and attempt_to_be == 'secondary' then
-        M.reset()
-        debug_event_to_file(" subrouter allready reset !!")
-        ubus.send('mptun.removed', {})
+    local ctx = pre_deal_aw_stop_by_cloud()
+    debug_event_to_file(" into AW_net_stoped_by_cloud: service_mode: " .. tostring(ctx.service_mode) ..
+        " be_kicked_out: " .. tostring(ctx.be_kicked_out) .. " auto_reset: " .. tostring(ctx.auto_reset) ..
+        " sub_mode: " .. tostring(ctx.sub_mode) .. " attempt_to_be: " .. tostring(ctx.attempt_to_be) ..
+        " should_clear_local: " .. tostring(ctx.should_clear_local) ..
+        " should_send_removed: " .. tostring(ctx.should_send_removed) ..
+        " should_clear_classic: " .. tostring(ctx.should_clear_classic))
+    if ctx.should_clear_local then
+        __clear_local_reset_data()
+        debug_event_to_file(" subrouter allready clear local reset data !!")
+        if ctx.should_send_removed then
+            ubus.send('mptun.removed', {})
+        end
     end
-    if service_mode == 'classic' then
+    if ctx.should_clear_classic then
         c:delete("mptun", "global", "service_mode")
         c:commit("mptun")
     end
@@ -2407,6 +2520,7 @@ function M.am_init(params)
             accessiable_ifname = accessiable_ifname_list
         }
         set_IPRB_option(opt)
+        push_status_to_wb()
     end
     return {}
 end
@@ -2430,8 +2544,35 @@ function M.am_get_dynamic_code()
     local identity = c:get("mptun", "IPRB", "identity") or ''
 
     if current_mode == 'IPRB' and sub_mode == 'AstroMesh' and identity == 'secondary' then
-        M.reset()
-        M.am_init({ identity = "controller" })
+        local reset_ret
+        local reset_ok = false
+
+        set_AM_reseting(true, true)
+        reset_ret = __reset_remote_network()
+        if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
+            set_AM_reseting(false)
+            return { err_code = -1, err_msg = "already exist network and reset fail !" }
+        end
+
+        for _ = 1, 3 do
+            ngx.sleep(1)
+            if is_AM_reset_finished() then
+                reset_ok = true
+                break
+            end
+        end
+
+        if not reset_ok then
+            -- Keep auto_reset for a late AW_net_stoped_by_cloud callback.
+            return { err_code = -1, err_msg = "wait reset timeout !" }
+        end
+        -- Local reset data is expected to be cleared by AW_net_stoped_by_cloud after the cloud stop event arrives.
+        -- set_AM_reseting(false)
+        -- __clear_local_reset_data()
+        reset_ret = M.am_init({ identity = "controller" })
+        if type(reset_ret) == 'table' and reset_ret.err_code ~= nil and reset_ret.err_code ~= 0 then
+            return reset_ret
+        end
         ngx.sleep(1)
     end
     local req_opt = {
@@ -2535,8 +2676,35 @@ function M.am_join_net_by_dynamic_code(params)
     local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
     if current_mode == 'IPRB' and sub_mode == 'AstroMesh' then
         local am_identity = "subrouter"
-        M.reset()
-        M.am_init({ identity = am_identity })
+        local reset_ret
+        local reset_ok = false
+
+        set_AM_reseting(true, true)
+        reset_ret = __reset_remote_network()
+        if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
+            set_AM_reseting(false)
+            return { err_code = -1, err_msg = "already exist network and reset fail !" }
+        end
+
+        for _ = 1, 3 do
+            ngx.sleep(1)
+            if is_AM_reset_finished() then
+                reset_ok = true
+                break
+            end
+        end
+
+        if not reset_ok then
+            -- Keep auto_reset for a late AW_net_stoped_by_cloud callback.
+            return { err_code = -1, err_msg = "wait reset timeout !" }
+        end
+        -- Local reset data is expected to be cleared by AW_net_stoped_by_cloud after the cloud stop event arrives.
+        -- set_AM_reseting(false)
+        -- __clear_local_reset_data()
+        reset_ret = M.am_init({ identity = am_identity })
+        if type(reset_ret) == 'table' and reset_ret.err_code ~= nil and reset_ret.err_code ~= 0 then
+            return reset_ret
+        end
         ngx.sleep(1)
     end
     local opt = {}
