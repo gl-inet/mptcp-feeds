@@ -1731,7 +1731,7 @@ local function deal_network_event_newaddr(event_info)
             -- Temporary implementation: reconnect to force a recheck for conflicts.
             if tmp_disabled ~= '1' then
                 ngx.timer.at(2.0, function()
-                    ngx.pipe.spawn({ "/etc/init.d/mptun", "start" }):wait()
+                    ngx.pipe.spawn({ "/etc/init.d/mptun", "restart" }):wait()
                 end)
                 return {}
             end
