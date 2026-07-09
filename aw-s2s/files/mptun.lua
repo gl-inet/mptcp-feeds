@@ -2056,7 +2056,7 @@ local function snoop_response_identity_verification(resp)
                     return {}
                 end
 
-                for _ = 1, 3 do
+                for _ = 1, 5 do
                     ngx.sleep(1)
                     if is_AM_reset_finished() then
                         reset_ok = true
@@ -2297,9 +2297,14 @@ local function pre_deal_aw_stop_by_cloud()
         c:set("mptun", "IPRB", "active", "0")
         c:set("mptun", "IPRB", "state", "stoped")
 
-        -- get_node_info failure indicates the local role has already lost its cloud-side network membership.
-        local rpc_resp = M.get_node_info()
-        local rpc_err_code = rpc_resp and rpc_resp.err_code and tonumber(rpc_resp.err_code)
+        -- During local reset cleanup, avoid touching cloud state again.
+        local rpc_resp
+        local rpc_err_code
+        if not ctx.should_clear_local then
+            -- get_node_info failure indicates the local role has already lost its cloud-side network membership.
+            rpc_resp = M.get_node_info()
+            rpc_err_code = rpc_resp and rpc_resp.err_code and tonumber(rpc_resp.err_code)
+        end
         --Failed to obtain IPRB information; indicates the user has been kicked out of the network.
         if rpc_err_code ~= nil and rpc_err_code < 0 then
             if identity == "primary" or identity == "secondary" then
@@ -2537,41 +2542,52 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"dynamic_code":"6AC4521","expiration_remainder":11111111}}
 --]]
 function M.am_get_dynamic_code()
-    M.get_node_info()
+    local node_info = M.get_node_info()
     local c = uci.cursor()
     local current_mode = c:get("mptun", "global", "service_mode") or ''
     local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
     local identity = c:get("mptun", "IPRB", "identity") or ''
+    local cloud_info_ready = type(node_info) == 'table' and type(node_info.info) == 'table' and
+        node_info.info.err_code == 0
 
     if current_mode == 'IPRB' and sub_mode == 'AstroMesh' and identity == 'secondary' then
-        local reset_ret
-        local reset_ok = false
+        if cloud_info_ready then
+            local reset_ret
+            local reset_ok = false
 
-        set_AM_reseting(true, true)
-        reset_ret = __reset_remote_network()
-        if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
-            set_AM_reseting(false)
-            return { err_code = -1, err_msg = "already exist network and reset fail !" }
-        end
-
-        for _ = 1, 3 do
-            ngx.sleep(1)
-            if is_AM_reset_finished() then
-                reset_ok = true
-                break
+            set_AM_reseting(true, true)
+            reset_ret = __reset_remote_network()
+            if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
+                set_AM_reseting(false)
+                return { err_code = -1, err_msg = "already exist network and reset fail !" }
             end
-        end
 
-        if not reset_ok then
-            -- Keep auto_reset for a late AW_net_stoped_by_cloud callback.
-            return { err_code = -1, err_msg = "wait reset timeout !" }
-        end
-        -- Local reset data is expected to be cleared by AW_net_stoped_by_cloud after the cloud stop event arrives.
-        -- set_AM_reseting(false)
-        -- __clear_local_reset_data()
-        reset_ret = M.am_init({ identity = "controller" })
-        if type(reset_ret) == 'table' and reset_ret.err_code ~= nil and reset_ret.err_code ~= 0 then
-            return reset_ret
+            for _ = 1, 5 do
+                ngx.sleep(1)
+                if is_AM_reset_finished() then
+                    reset_ok = true
+                    break
+                end
+            end
+
+            if not reset_ok then
+                -- Keep auto_reset for a late AW_net_stoped_by_cloud callback.
+                return { err_code = -1, err_msg = "wait reset timeout !" }
+            end
+            -- Local reset data is expected to be cleared by AW_net_stoped_by_cloud after the cloud stop event arrives.
+            -- set_AM_reseting(false)
+            -- __clear_local_reset_data()
+            reset_ret = M.am_init({ identity = "controller" })
+            if type(reset_ret) == 'table' and reset_ret.err_code ~= nil and reset_ret.err_code ~= 0 then
+                return reset_ret
+            end
+        else
+            debug_event_to_file("am_get_dynamic_code clear local AstroMesh state because cloud info is unavailable")
+            __clear_local_reset_data()
+            local init_ret = M.am_init({ identity = "controller" })
+            if type(init_ret) == 'table' and init_ret.err_code ~= nil and init_ret.err_code ~= 0 then
+                return init_ret
+            end
         end
         ngx.sleep(1)
     end
@@ -2670,40 +2686,52 @@ function M.am_join_net_by_dynamic_code(params)
         return { err_code = -1, err_msg = "invalid params !" }
     end
 
-    M.get_node_info()
+    local node_info = M.get_node_info()
     local c = uci.cursor()
     local current_mode = c:get("mptun", "global", "service_mode") or ''
     local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
+    local cloud_info_ready = type(node_info) == 'table' and type(node_info.info) == 'table' and
+        node_info.info.err_code == 0
     if current_mode == 'IPRB' and sub_mode == 'AstroMesh' then
         local am_identity = "subrouter"
-        local reset_ret
-        local reset_ok = false
+        if cloud_info_ready then
+            local reset_ret
+            local reset_ok = false
 
-        set_AM_reseting(true, true)
-        reset_ret = __reset_remote_network()
-        if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
-            set_AM_reseting(false)
-            return { err_code = -1, err_msg = "already exist network and reset fail !" }
-        end
-
-        for _ = 1, 3 do
-            ngx.sleep(1)
-            if is_AM_reset_finished() then
-                reset_ok = true
-                break
+            set_AM_reseting(true, true)
+            reset_ret = __reset_remote_network()
+            if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
+                set_AM_reseting(false)
+                return { err_code = -1, err_msg = "already exist network and reset fail !" }
             end
-        end
 
-        if not reset_ok then
-            -- Keep auto_reset for a late AW_net_stoped_by_cloud callback.
-            return { err_code = -1, err_msg = "wait reset timeout !" }
-        end
-        -- Local reset data is expected to be cleared by AW_net_stoped_by_cloud after the cloud stop event arrives.
-        -- set_AM_reseting(false)
-        -- __clear_local_reset_data()
-        reset_ret = M.am_init({ identity = am_identity })
-        if type(reset_ret) == 'table' and reset_ret.err_code ~= nil and reset_ret.err_code ~= 0 then
-            return reset_ret
+            for _ = 1, 5 do
+                ngx.sleep(1)
+                if is_AM_reset_finished() then
+                    reset_ok = true
+                    break
+                end
+            end
+
+            if not reset_ok then
+                -- Keep auto_reset for a late AW_net_stoped_by_cloud callback.
+                return { err_code = -1, err_msg = "wait reset timeout !" }
+            end
+            -- Local reset data is expected to be cleared by AW_net_stoped_by_cloud after the cloud stop event arrives.
+            -- set_AM_reseting(false)
+            -- __clear_local_reset_data()
+            reset_ret = M.am_init({ identity = am_identity })
+            if type(reset_ret) == 'table' and reset_ret.err_code ~= nil and reset_ret.err_code ~= 0 then
+                return reset_ret
+            end
+        else
+            debug_event_to_file(
+                "am_join_net_by_dynamic_code clear local AstroMesh state because cloud info is unavailable")
+            __clear_local_reset_data()
+            local init_ret = M.am_init({ identity = am_identity })
+            if type(init_ret) == 'table' and init_ret.err_code ~= nil and init_ret.err_code ~= 0 then
+                return init_ret
+            end
         end
         ngx.sleep(1)
     end
