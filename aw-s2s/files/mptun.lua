@@ -127,8 +127,12 @@ end
 local function debug_event_to_file(msg)
     local c = uci.cursor()
     local need_debug = c:get("mptun", "global", "debug") == '1'
+    if not need_debug or type(msg) ~= 'string' then
+        return
+    end
+
     local f_deb = io.open("/var/log/mptun_debug_log", "a")
-    if need_debug and f_deb ~= nil and msg ~= nil and type(msg) == 'string' then
+    if f_deb ~= nil then
         f_deb:write(tostring(msg) .. '\n')
         f_deb:close()
     end
@@ -1661,26 +1665,125 @@ local function report_local_accessible_net_resource()
     end
     return __report_net_resource({ resource = resources })
 end
-local function get_interface_by_device(device)
-    if type(device) ~= 'string' or device == '' then
-        return nil
-    end
 
+local function get_interface_by_device_from_ubus(device, accessiable_ifname_map)
     local dump = ubus.call("network.interface", "dump", {})
     local interfaces = dump and dump.interface
-    if type(interfaces) ~= 'table' then
-        return nil
-    end
-
-    for _, item in ipairs(interfaces) do
-        if type(item) == 'table' and type(item.interface) == 'string' then
-            if item.l3_device == device then
-                return item.interface
+    if type(interfaces) == 'table' then
+        for _, item in ipairs(interfaces) do
+            if type(item) == 'table' and type(item.interface) == 'string' then
+                if item.l3_device == device and accessiable_ifname_map[item.interface] == true then
+                    debug_event_to_file("newaddr debug: ubus hit device=" .. tostring(device) ..
+                        " ifname=" .. tostring(item.interface))
+                    return item.interface
+                end
             end
         end
     end
 
     return nil
+end
+
+local function get_interface_by_device_from_uci(device, accessiable_ifname_map)
+    local c = uci.cursor()
+
+    local function value_matches(value)
+        if type(value) == 'table' then
+            for _, item in ipairs(value) do
+                if value_matches(item) then
+                    return true
+                end
+            end
+            return false
+        end
+
+        if type(value) ~= 'string' then
+            return false
+        end
+
+        for token in string.gmatch(value, '%S+') do
+            if token == device then
+                return true
+            end
+        end
+
+        return false
+    end
+
+    local function value_to_string(value)
+        if type(value) == 'table' then
+            local values = {}
+            for _, item in ipairs(value) do
+                if type(item) == 'string' then
+                    table.insert(values, item)
+                end
+            end
+            return table.concat(values, " ")
+        end
+
+        return tostring(value)
+    end
+
+    local found_ifname
+    c:foreach('network', 'interface', function(section)
+        local ifname = section['.name']
+        if found_ifname ~= nil or type(ifname) ~= 'string' or accessiable_ifname_map[ifname] ~= true then
+            return
+        end
+
+        -- Current UCI fallback only handles direct device/ifname matches on static/dhcp interfaces.
+        if section.proto ~= 'static' and section.proto ~= 'dhcp' then
+            debug_event_to_file("newaddr debug: uci skip ifname=" .. tostring(ifname) ..
+                " proto=" .. tostring(section.proto))
+            return
+        end
+
+        if value_matches(section.device) or value_matches(section.ifname) then
+            found_ifname = ifname
+            debug_event_to_file("newaddr debug: uci hit device=" .. tostring(device) ..
+                " ifname=" .. tostring(ifname) ..
+                " section.device=" .. value_to_string(section.device) ..
+                " section.ifname=" .. value_to_string(section.ifname))
+        end
+    end)
+
+    return found_ifname
+end
+
+local function get_interface_by_device(device, accessiable_ifname_map)
+    if type(device) ~= 'string' or device == '' then
+        return nil
+    end
+
+    if type(accessiable_ifname_map) ~= 'table' or next(accessiable_ifname_map) == nil then
+        return nil
+    end
+
+    local ifname = get_interface_by_device_from_ubus(device, accessiable_ifname_map)
+    if type(ifname) == 'string' and ifname ~= '' then
+        return ifname
+    end
+
+    return get_interface_by_device_from_uci(device, accessiable_ifname_map)
+end
+
+local function get_accessiable_ifname_by_device(device)
+    local accessiable_ifname_list = get_accessiable_ifname_list()
+    if #accessiable_ifname_list == 0 then
+        return nil
+    end
+
+    local accessiable_ifname_map = {}
+    for _, v in pairs(accessiable_ifname_list) do
+        if type(v) == 'string' and v ~= '' then
+            accessiable_ifname_map[v] = true
+        end
+    end
+
+    debug_event_to_file("newaddr debug: accessiable_ifname_list=" ..
+        table.concat(accessiable_ifname_list, ",") .. " device=" .. tostring(device))
+
+    return get_interface_by_device(device, accessiable_ifname_map)
 end
 
 local function deal_network_event_newaddr(event_info)
@@ -1697,24 +1800,17 @@ local function deal_network_event_newaddr(event_info)
     local prefixlen = tonumber(event_info.prefixlen)
     local device = event_info.device
 
+    debug_event_to_file("newaddr debug: event code=" .. tostring(event_info.event_code) ..
+        " ip=" .. tostring(ip_address) ..
+        " prefixlen=" .. tostring(event_info.prefixlen) ..
+        " device=" .. tostring(device))
+
     if type(ip_address) ~= 'string' or ip_address == '' or prefixlen == nil or type(device) ~= 'string' or device == '' then
+        debug_event_to_file("newaddr debug: invalid event params")
         return {}
     end
 
-    local ifname = get_interface_by_device(device)
-    if type(ifname) ~= 'string' or ifname == '' then
-        return {}
-    end
-
-    local accessiable_ifname_list = get_accessiable_ifname_list()
-    local allowed = false
-    for _, v in pairs(accessiable_ifname_list) do
-        if v == ifname then
-            allowed = true
-            break
-        end
-    end
-    if not allowed then
+    if get_accessiable_ifname_by_device(device) == nil then
         return {}
     end
 
@@ -1723,20 +1819,28 @@ local function deal_network_event_newaddr(event_info)
     local tmp_sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
     local tmp_identity = c:get("mptun", "IPRB", "identity") or ''
     local tmp_disabled = c:get("mptun", "IPRB", "disabled") or '0'
+    debug_event_to_file("newaddr debug: mode service=" .. tostring(tmp_service_mode) ..
+        " sub_mode=" .. tostring(tmp_sub_mode) ..
+        " identity=" .. tostring(tmp_identity) ..
+        " disabled=" .. tostring(tmp_disabled))
     if tmp_service_mode == 'IPRB' and tmp_sub_mode == 'AstroMesh' then
         if tmp_identity == 'primary' then
+            debug_event_to_file("newaddr debug: primary report resource")
             report_local_accessible_net_resource()
             return {}
         elseif tmp_identity == 'secondary' then
             -- Temporary implementation: reconnect to force a recheck for conflicts.
             if tmp_disabled ~= '1' then
+                debug_event_to_file("newaddr debug: secondary schedule restart")
                 ngx.timer.at(2.0, function()
                     ngx.pipe.spawn({ "/etc/init.d/mptun", "restart" }):wait()
                 end)
                 return {}
             end
+            debug_event_to_file("newaddr debug: secondary disabled skip restart")
         end
     end
+    debug_event_to_file("newaddr debug: mode not handled")
 end
 
 set_network_event_deal_func("new address", deal_network_event_newaddr)
