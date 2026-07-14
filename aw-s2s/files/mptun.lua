@@ -2129,18 +2129,66 @@ end
 
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 local function snoop_response_identity_verification(resp)
+    local function reset_remote_network_and_init_am(am_identity, reset_fail_msg)
+        local reset_ret
+        local reset_ok = false
+
+        set_AM_reseting(true, true)
+        reset_ret = __reset_remote_network()
+        if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
+            set_AM_reseting(false)
+            if type(reset_fail_msg) == 'string' then
+                debug_event_to_file(reset_fail_msg .. tostring(reset_ret and reset_ret.err_msg))
+            end
+            return false
+        end
+
+        for _ = 1, 5 do
+            ngx.sleep(1)
+            if is_AM_reset_finished() then
+                reset_ok = true
+                break
+            end
+        end
+
+        if not reset_ok then
+            -- Keep auto_reset for a late AW_net_stoped_by_cloud callback.
+            return false
+        end
+
+        reset_ret = M.am_init({ identity = am_identity })
+        if type(reset_ret) == 'table' and reset_ret.err_code ~= nil and reset_ret.err_code ~= 0 then
+            return false
+        end
+
+        return true
+    end
+
     local ret = parse_response_identity_verification(resp)
     if type(ret) == "table" and ret.err_code == 0 then
         local c = uci.cursor()
         local current_mode = c:get("mptun", "global", "service_mode") or ""
         if ret.mode == 'IPRB' then
             local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
+            local identity = c:get("mptun", "IPRB", "identity") or ''
             local am_local_use_exit = c:get("mptun", "IPRB", "am_local_use_exit") or ''
-            if ret.sub_mode == 'AstroMesh' and current_mode == "" and sub_mode ~= 'AstroMesh' then
-                debug_event_to_file("reset remote Astromesh net: " .. tostring(ret.sub_mode) ..
-                    " current_mode: " .. tostring(current_mode) .. " sub_mode: " .. tostring(sub_mode))
-                M.reset()
-                return {}
+            if ret.sub_mode == 'AstroMesh' and current_mode == "" then
+                -- Temporary implementation: default to controller because the local AstroMesh role
+                -- cannot be determined reliably here after reset.
+                if sub_mode ~= 'AstroMesh' then
+                    debug_event_to_file("reset remote Astromesh net: " .. tostring(ret.sub_mode) ..
+                        " current_mode: " .. tostring(current_mode) .. " sub_mode: " .. tostring(sub_mode))
+                    M.reset()
+                    return {}
+                elseif sub_mode == 'AstroMesh' and identity ~= 'primary' and identity ~= 'secondary' then
+                    debug_event_to_file("reset remote Astromesh net for uninitialized primary: " ..
+                        tostring(ret.sub_mode) ..
+                        " current_mode: " .. tostring(current_mode) .. " sub_mode: " .. tostring(sub_mode) ..
+                        " identity: " .. tostring(identity))
+                    reset_remote_network_and_init_am("controller",
+                        "failed to reset remote AstroMesh state for uninitialized AstroMesh role. ")
+                    return {}
+                end
             elseif ret.sub_mode == 'classic' and current_mode == "" and sub_mode == 'AstroMesh' then
                 -- Temporary implementation: default to controller because the local AstroMesh role
                 -- cannot be determined reliably here after reset.
@@ -2148,35 +2196,7 @@ local function snoop_response_identity_verification(resp)
                 debug_event_to_file("reset remote residual AstroMesh state for IPRB sub_mode: " ..
                     tostring(ret.sub_mode) ..
                     " current_mode: " .. tostring(current_mode) .. " sub_mode: " .. tostring(sub_mode))
-                local reset_ret
-                local reset_ok = false
-
-                set_AM_reseting(true, true)
-                reset_ret = __reset_remote_network()
-                if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
-                    set_AM_reseting(false)
-                    debug_event_to_file("failed to reset remote residual AstroMesh state: " ..
-                        tostring(reset_ret and reset_ret.err_msg))
-                    return {}
-                end
-
-                for _ = 1, 5 do
-                    ngx.sleep(1)
-                    if is_AM_reset_finished() then
-                        reset_ok = true
-                        break
-                    end
-                end
-
-                if not reset_ok then
-                    -- Keep auto_reset for a late AW_net_stoped_by_cloud callback.
-                    return {}
-                end
-
-                reset_ret = M.am_init({ identity = am_identity })
-                if type(reset_ret) == 'table' and reset_ret.err_code ~= nil and reset_ret.err_code ~= 0 then
-                    return {}
-                end
+                reset_remote_network_and_init_am(am_identity, "failed to reset remote residual AstroMesh state: ")
                 return {}
             end
             local opt = {}
