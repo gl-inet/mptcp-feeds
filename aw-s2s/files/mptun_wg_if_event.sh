@@ -21,7 +21,11 @@ IPRB_sub_mode="$(uci -q get mptun.IPRB.sub_mode)"
 #[ "${IPRB_identity}" != "secondary" ] && return 0
 WG_BIN='awg'
 
-peerpubkey_safe="$(echo "$peerpubkey" | sed 's/[^A-Za-z0-9._-]//g')"
+IPRB_safe_pubkey() {
+    printf "%s\n" "$1" | sed 's/[^A-Za-z0-9._-]//g'
+}
+
+peerpubkey_safe="$(IPRB_safe_pubkey "$peerpubkey")"
 
 IPRB_update_p2p_status() {
     get_default_pub() {
@@ -41,7 +45,7 @@ IPRB_update_p2p_status() {
         local q="0.0.0.0/0"
         local cur_pub=""
 
-        $WG_BIN show | while read line; do
+        $WG_BIN show "${ifname}" | while read line; do
             case "$line" in
                 peer:*)
                     cur_pub="${line#peer: }"
@@ -82,6 +86,40 @@ IPRB_update_p2p_status() {
         uci commit mptun
         notify_IPRB_status
     }
+}
+
+IPRB_has_remaining_remote_peer() {
+    local current_peer_safe
+    local peers
+    local self_pub
+    local self_pub_safe
+    local peer
+    local peer_safe
+
+    current_peer_safe="$1"
+
+    # An external peer manager prunes inactive peers from awg, so the remaining
+    # peers reported here are treated as active remote connections.
+    peers="$($WG_BIN show "${ifname}" peers 2>/dev/null)"
+    [ "$?" -ne 0 ] && return 0
+
+    self_pub="$($WG_BIN show "${ifname}" public-key 2>/dev/null)"
+    self_pub_safe="$(IPRB_safe_pubkey "$self_pub")"
+
+    for peer in $peers; do
+        [ -z "$peer" ] && continue
+        peer_safe="$(IPRB_safe_pubkey "$peer")"
+        [ -z "$peer_safe" ] && continue
+        if [ -n "$self_pub_safe" ]; then
+            [ "$peer_safe" = "$self_pub_safe" ] && continue
+        fi
+        if [ -n "$current_peer_safe" ]; then
+            [ "$peer_safe" = "$current_peer_safe" ] && continue
+        fi
+        return 0
+    done
+
+    return 1
 }
 
 [ "${IPRB_identity}" = "secondary" ] && IPRB_update_p2p_status
@@ -132,7 +170,11 @@ if [ "${ACTION}" = "REKEY-TIMEOUT"  -a -n "$(echo "${ifname}" | grep "^mptun")" 
     # unlock
     rm -f $LOCKFILE
 
-    [ "${active_num}" -ne 0 ] && return
+    if [ "${active_num}" -ne 0 ]; then
+        if IPRB_has_remaining_remote_peer "$peerpubkey_safe"; then
+            return
+        fi
+    fi
 
     uci -q set mptun.IPRB.state="connecting"
     uci -q delete mptun.IPRB.lastConnectedTime
@@ -142,6 +184,4 @@ if [ "${ACTION}" = "REKEY-TIMEOUT"  -a -n "$(echo "${ifname}" | grep "^mptun")" 
     # Try switching ports to reconnect and avoid disconnections caused by network changes.
     $WG_BIN set "${ifname}" listen-port 0
 fi
-
-
 
