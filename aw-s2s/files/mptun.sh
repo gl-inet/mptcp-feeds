@@ -498,6 +498,9 @@ set_firewall()
 
     uci commit firewall
     /etc/init.d/firewall reload 2>/dev/null
+    [ -x /usr/bin/gl_block_wan_access_exit ] && {
+        /usr/bin/gl_block_wan_access_exit up astrowarp mptun "${DEV:-mptun0}" 1 br2mptun >/dev/null 2>&1
+    }
 }
 
 set_dns() {
@@ -938,6 +941,9 @@ clean_udptun() {
 
         uci commit firewall
         /etc/init.d/firewall reload 2>/dev/null
+    }
+    [ -x /usr/bin/gl_block_wan_access_exit ] && {
+        /usr/bin/gl_block_wan_access_exit down astrowarp >/dev/null 2>&1
     }
 
     [ -n "$(uci -q get network.mpudptun_rule)" ] && {
