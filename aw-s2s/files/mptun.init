@@ -86,7 +86,12 @@ start_service() {
     mptun_init "$profile" "$dev" "$udpmark" "$tcpmark"
 
     # Temporary, Trigger mptun to fetch node info
-    curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":101,"method":"call","params":["","mptun","get_node_info",{}]}' >/dev/null 2>&1 &
+    (
+        # shellcheck disable=SC3023
+        exec 1000>&-
+        exec </dev/null >/dev/null 2>&1
+        curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":101,"method":"call","params":["","mptun","get_node_info",{}]}' >/dev/null 2>&1
+    ) &
 
     [ -e "$PROG" ] || return
     [ -e "/var/run/mpnode.json" ] || return

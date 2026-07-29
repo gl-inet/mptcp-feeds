@@ -24,11 +24,21 @@ IPRB_sub_mode="$(uci -q get mptun.IPRB.sub_mode)"
 [ "${IPRB_sub_mode}" = '' ] && IPRB_sub_mode='classic'
 
 notify_IPRB_status() {
-    $(curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","push_IPRB_status_to_wb",{}]}')
+    (
+        # shellcheck disable=SC3023
+        exec 1000>&-
+        exec </dev/null >/dev/null 2>&1
+        curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","push_IPRB_status_to_wb",{}]}' >/dev/null 2>&1
+    ) &
 }
 
 push_aw_notice_info() {
-    $(curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","AW_push_notification_msg",{}]}')
+    (
+        # shellcheck disable=SC3023
+        exec 1000>&-
+        exec </dev/null >/dev/null 2>&1
+        curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","AW_push_notification_msg",{}]}' >/dev/null 2>&1
+    ) &
 }
 
 is_conflict_resource() {
@@ -1040,4 +1050,3 @@ get_arp_scan_ret(){
         cat /dev/null > "$tmp_file"
     fi
 }
-
