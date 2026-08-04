@@ -20,8 +20,6 @@ use_fw4='0'
 service_mode="$(uci -q get mptun.global.service_mode)"
 [ "${service_mode}" = '' ] && service_mode='classic'
 IPRB_identity="$(uci -q get mptun.IPRB.identity)"
-IPRB_sub_mode="$(uci -q get mptun.IPRB.sub_mode)"
-[ "${IPRB_sub_mode}" = '' ] && IPRB_sub_mode='classic'
 
 notify_IPRB_status() {
     (
@@ -312,14 +310,9 @@ set_firewall()
     fi
 
     if [ "${service_mode}" = 'IPRB' ] ;then
-        if [ "${IPRB_sub_mode}" = "AstroMesh" ] ;then
-            alllow_restricted_forward='1'
-            input_only_mptun_icmp='0'
-        else
-            alllow_restricted_forward='0'
-            # generic IPRB mode, just allowes icmp.
-            input_only_mptun_icmp='1'
-        fi
+        alllow_restricted_forward='0'
+        # generic IPRB mode, just allowes icmp.
+        input_only_mptun_icmp='1'
         forward_just_deal_DNAT='0'
     fi
 

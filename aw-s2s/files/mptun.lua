@@ -13,6 +13,7 @@ local http = require "resty.http"
 local M = {}
 
 local ERR_PARAMETER = 1
+local enable_extend_feature = false
 
 local req_path = {
     ["req_get_identity"] = "/sdwan/sdk-iprb/v1/my/network/simple",
@@ -91,20 +92,6 @@ local PATH_AW_NOTICE_INFO = PATH_AW_RUN_INFO .. "/notice_info"
 local notice_type = {
     "resource_net_conflict"
 }
-local am_key_rename_map = {
-    -- example:
-    -- IPv6Addr = 'ipv6_addr'
-}
-local am_specific_error_code = {
-    -- example:
-    -- [12345] = { err_code = -12345, err_msg = "custom error message" }
-    [50003225] = { err_code = 301, err_msg = "The device has been added to an existing network." },
-    [50003158] = { err_code = 302, err_msg = "Calling cloud APIs too frequently" },
-    [50000007] = { err_code = 303, err_msg = "The system time difference is too large." },
-    [50000008] = { err_code = 304, err_msg = "Invalid signature information." },
-    [50003229] = { err_code = 305, err_msg = "The token information is not present in the cloud. Please check if the cloud service is online normally." },
-    [10000006] = { err_code = 306, err_msg = "Parameter error" }
-}
 local network_event_type = {
     [10] = { type = "new address", deal_func = nil }
 }
@@ -136,10 +123,6 @@ local function debug_event_to_file(msg)
         f_deb:write(tostring(msg) .. '\n')
         f_deb:close()
     end
-end
-local function is_valid_dynamic_code(dynamic_code)
-    return type(dynamic_code) == 'string' and
-        string.match(dynamic_code, valid_query_and_body_params["dynamicCode"]) == dynamic_code
 end
 local function to_network_cidr(ip, mask)
     if type(ip) ~= 'string' then
@@ -353,86 +336,6 @@ local function check_params_valid(params, checkfunc)
     return check(nil, params)
 end
 
-local function am_to_snake_key(key)
-    if type(key) ~= 'string' then
-        return key
-    end
-
-    if am_key_rename_map[key] ~= nil then
-        return am_key_rename_map[key]
-    end
-
-    local snake_key = key
-    snake_key = snake_key:gsub('(%u)(%u%l)', '%1_%2')
-    snake_key = snake_key:gsub('([%l%d])(%u)', '%1_%2')
-    snake_key = string.lower(snake_key)
-
-    return snake_key
-end
-
-local function am_convert_info_keys_to_snake(info)
-    local converting = {}
-
-    local function convert(value)
-        if type(value) ~= 'table' then
-            if value == cjson.null then
-                value = nil
-            end
-            return { err_code = 0, value = value }
-        end
-
-        if converting[value] == true then
-            return { err_code = -2, err_msg = 'circular reference in info table!' }
-        end
-
-        local converted = {}
-        local key_map = {}
-        converting[value] = true
-
-        for k, v in pairs(value) do
-            local new_key = k
-            if type(k) == 'string' then
-                new_key = am_to_snake_key(k)
-            elseif type(k) ~= 'number' then
-                converting[value] = nil
-                return { err_code = -4, err_msg = 'unsupported key type in info table!' }
-            end
-
-            if key_map[new_key] ~= nil and key_map[new_key] ~= k then
-                converting[value] = nil
-                return { err_code = -3, err_msg = 'duplicate key after snake_case conversion!' }
-            end
-
-            key_map[new_key] = k
-
-            local ret = convert(v)
-            if ret.err_code ~= 0 then
-                converting[value] = nil
-                return ret
-            end
-
-            converted[new_key] = ret.value
-        end
-
-        converting[value] = nil
-
-        return { err_code = 0, value = converted }
-    end
-
-    if type(info) ~= 'table' then
-        return { err_code = -1, err_msg = 'invalid info table!' }
-    end
-
-    local ret = convert(info)
-    if ret.err_code ~= 0 then
-        return ret
-    end
-
-    return {
-        err_code = 0,
-        info = ret.value
-    }
-end
 local function set_service_mode(mode)
     local c = uci.cursor()
     if mode ~= nil and (mode == 'IPRB' or mode == 'classic') then
@@ -464,29 +367,6 @@ local function set_IPRB_option(opt)
     c:commit("mptun")
 end
 
-local function set_AM_reseting(enabled, auto_reset)
-    local c = uci.cursor()
-    if enabled == true then
-        c:set("mptun", "IPRB", "service_instance")
-        c:set("mptun", "IPRB", "reseting", "1")
-        if auto_reset == true then
-            c:set("mptun", "IPRB", "auto_reset", "1")
-        else
-            c:delete("mptun", "IPRB", "auto_reset")
-        end
-    else
-        c:delete("mptun", "IPRB", "reseting")
-        c:delete("mptun", "IPRB", "auto_reset")
-    end
-    c:commit("mptun")
-end
-
-local function is_AM_reset_finished()
-    local c = uci.cursor()
-    local reseting = c:get("mptun", "IPRB", "reseting") or ''
-
-    return reseting == ''
-end
 local function net_topology_is_exist()
     for _ = 1, 15 do
         if fs.access('/etc/mptun/mpnet_conf') then
@@ -979,7 +859,7 @@ end
 local function IPRB_is_enabled()
     local c = uci.cursor()
     local service_mode = c:get("mptun", "global", "service_mode") or ''
-    if service_mode == nil or service_mode == '' then
+    if service_mode == '' then
         get_info_from_cloud()
         c:load("mptun")
         service_mode = c:get("mptun", "global", "service_mode") or ''
@@ -1009,9 +889,7 @@ local function __get_IPRB_status(params)
 
     local c = uci.cursor()
     local identity = c:get("mptun", "IPRB", "identity") or ''
-    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
     status.identity = identity
-    status.sub_mode = sub_mode
     status.lastConnectedTime = c:get("mptun", "IPRB", "lastConnectedTime") or ''
 
     status.be_kicked_out = c:get("mptun", "IPRB", "be_kicked_out") or '0'
@@ -1027,32 +905,20 @@ local function __get_IPRB_status(params)
         status.attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
     end
     status.use_exit = c:get("mptun", "IPRB", "use_exit") or '1'
-    if sub_mode == 'AstroMesh' then
-        status.use_exit = c:get("mptun", "IPRB", "am_local_use_exit") or c:get("mptun", "IPRB", "use_exit") or '1'
-    end
     return { status = status }
 end
 
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 local function check_AW_has_right_identity(identity)
+    local state = __get_IPRB_status()
+    local backend_identity = state.status.identity or ''
     local c = uci.cursor()
     local service_mode = c:get("mptun", "global", "service_mode") or ''
 
-    local state = __get_IPRB_status()
-    local backend_identity = state.status.identity or ''
-    local sub_mode = state.status.sub_mode or ''
-
     if service_mode == 'IPRB' then
-        if sub_mode == 'AstroMesh' then
-            if (identity == 'controller' and backend_identity == 'primary') or
-                (identity == 'subrouter' and backend_identity == 'secondary') then
-                return true
-            end
-        else
-            if (identity == 'primary' and backend_identity == 'primary') or
-                (identity == 'secondary' and backend_identity == 'secondary') then
-                return true
-            end
+        if (identity == 'primary' and backend_identity == 'primary') or
+            (identity == 'secondary' and backend_identity == 'secondary') then
+            return true
         end
     end
 
@@ -1063,11 +929,6 @@ end
 local function push_status_to_wb()
     local status = __get_IPRB_status()
     ubus.call('gl-session', 'notify', { name = "mptun.IPRB_status", data = status })
-    local c = uci.cursor()
-    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
-    if sub_mode == 'AstroMesh' then
-        ubus.send('mptun.status', status.status)
-    end
 end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 --[[
@@ -1144,41 +1005,22 @@ end
 --[[
     @method-type: call
     @method-name: AW_get_global_summary
-    @method-desc: Get a simplified global summary of current AW mode and enable state.
-    @out bool       enabled                 Is the AW function actually enabled or not
-    @out string     mode                    Current summary mode: classic, IPRB, or AstroMesh
-    @out number     ?err_code               Error Code
-    @out string     ?err_msg                Error Message
+    @method-desc: Get the current AW mode and enable state.
+    @out bool       enabled                 Whether the current AW mode is enabled
+    @out string     mode                    Current AW mode: classic or IPRB; empty if no valid mode is available
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "AW_get_global_summary",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"enabled":true,"mode":"AstroMesh"}}
+    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"enabled":true,"mode":"IPRB"}}
 --]]
 function M.AW_get_global_summary(params)
     local ret = M.get_AW_status()
-    local c = uci.cursor()
-    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
     local result = {
         enabled = false,
         mode = ''
     }
     if type(ret) == 'table' and type(ret.mode) == "string" and ret.mode ~= '' then
-        result.enabled = ret.enabled
-        result.mode = ret.mode
-        if ret.mode == 'IPRB' then
-            if sub_mode == 'classic' then
-                result.mode = "IPRB"
-            elseif sub_mode == 'AstroMesh' then
-                -- In IPRB, if sub_mode is not classic, it will be AstroMesh
-                result.mode = "AstroMesh"
-            else
-                result.mode = ret.status.sub_mode or ''
-            end
-        end
-    else
-        -- if get_AW_status fails, fallback to a simple judgment based on sub_mode, which is not accurate but better than nothing.
-        if sub_mode == 'AstroMesh' then
-            result.mode = "AstroMesh"
-        elseif sub_mode == 'classic' then
-            result.mode = "IPRB"
+        if ret.mode == 'classic' or ret.mode == 'IPRB' then
+            result.enabled = ret.enabled
+            result.mode = ret.mode
         end
     end
     return result
@@ -1253,9 +1095,7 @@ end
 local function __AW_push_notification_msg()
     local c = uci.cursor()
     local service_mode = c:get("mptun", "global", "service_mode") or ''
-    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
-
-    if service_mode ~= 'IPRB' or sub_mode ~= 'AstroMesh' then
+    if service_mode ~= 'IPRB' then
         return
     end
     local notice_msg_list = __AW_get_notice_msg() or {}
@@ -1263,11 +1103,21 @@ local function __AW_push_notification_msg()
 end
 
 function M.AW_get_notice_msg(params)
+    if not enable_extend_feature then
+        return {}
+    end
+
     return __AW_get_notice_msg()
 end
+
 function M.AW_push_notification_msg(params)
+    if not enable_extend_feature then
+        return {}
+    end
+
     return __AW_push_notification_msg()
 end
+
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 local function get_network_id()
     local c = uci.cursor()
@@ -1326,34 +1176,6 @@ local function send_net_ctrl_msg(active)
     end
 end
 
-local function IPRB_sub_mode_is_inited()
-    local c = uci.cursor()
-    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
-    if sub_mode == 'classic' or sub_mode == 'AstroMesh' then
-        return true
-    else
-        return false
-    end
-end
-local function IPRB_sub_mode_init(params)
-    if IPRB_sub_mode_is_inited() then
-        return { err_code = -1, err_msg = "IPRB sub_mode has been inited!" }
-    end
-
-    local sub_mode = params.sub_mode or ''
-    if sub_mode ~= 'classic' and sub_mode ~= 'AstroMesh' then
-        return { err_code = -2, err_msg = "invalid sub_mode!" }
-    end
-
-    local opt = {}
-    opt.sub_mode = sub_mode
-    set_IPRB_option(opt)
-    debug_event_to_file("sub_mode " .. opt.sub_mode .. " inited ~~~~")
-
-    __push_global_summary_to_wb()
-
-    return { err_code = 0 }
-end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 local function __start_service(params)
     if __is_meet_startup_conditions() == false then
@@ -1399,7 +1221,7 @@ end
 --]]
 function M.start_service(params)
     if not check_AW_has_right_identity("primary") then
-        return { err_code = -1, err_msg = "invalid identity or invalid sub_mode" }
+        return { err_code = -1, err_msg = "invalid identity" }
     end
     debug_event_to_file("AW primary send start !!")
     return __start_service(params)
@@ -1436,7 +1258,7 @@ end
 --]]
 function M.pause_service(params)
     if not check_AW_has_right_identity("primary") then
-        return { err_code = -1, err_msg = "invalid identity or invalid sub_mode" }
+        return { err_code = -1, err_msg = "invalid identity" }
     end
     debug_event_to_file("AW primary send stop !!")
     return __pause_service(params)
@@ -1487,7 +1309,7 @@ end
 --]]
 function M.start_connect(params)
     if not check_AW_has_right_identity("secondary") then
-        return { err_code = -1, err_msg = "invalid identity or invalid sub_mode" }
+        return { err_code = -1, err_msg = "invalid identity" }
     end
     debug_event_to_file("AW second send start !!")
     return __start_connect(params)
@@ -1523,7 +1345,7 @@ end
 --]]
 function M.pause_connect(params)
     if not check_AW_has_right_identity("secondary") then
-        return { err_code = -1, err_msg = "invalid identity or invalid sub_mode" }
+        return { err_code = -1, err_msg = "invalid identity" }
     end
     debug_event_to_file("AW second send stop !!")
     return __pause_connect(params)
@@ -1625,6 +1447,10 @@ local function __report_net_resource(params)
 end
 
 function M.report_net_resource(params)
+    if not enable_extend_feature then
+        return {}
+    end
+
     return __report_net_resource(params)
 end
 
@@ -1816,14 +1642,12 @@ local function deal_network_event_newaddr(event_info)
 
     local c = uci.cursor()
     local tmp_service_mode = c:get("mptun", "global", "service_mode") or ''
-    local tmp_sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
     local tmp_identity = c:get("mptun", "IPRB", "identity") or ''
     local tmp_disabled = c:get("mptun", "IPRB", "disabled") or '0'
     debug_event_to_file("newaddr debug: mode service=" .. tostring(tmp_service_mode) ..
-        " sub_mode=" .. tostring(tmp_sub_mode) ..
         " identity=" .. tostring(tmp_identity) ..
         " disabled=" .. tostring(tmp_disabled))
-    if tmp_service_mode == 'IPRB' and tmp_sub_mode == 'AstroMesh' then
+    if tmp_service_mode == 'IPRB' then
         if tmp_identity == 'primary' then
             debug_event_to_file("newaddr debug: primary report resource")
             report_local_accessible_net_resource()
@@ -1903,25 +1727,6 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.reset(params)
-    local c = uci.cursor()
-    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
-    if sub_mode == 'AstroMesh' then
-        -- Special handling for AstroMesh: clear local state unconditionally and notify
-        -- the cloud reset in the background on a best-effort basis.
-        local ok, err = ngx.timer.at(0, function(premature)
-            if not premature then
-                __reset_remote_network()
-            end
-        end)
-        if not ok and err ~= nil then
-            debug_event_to_file("failed to schedule remote reset: " .. tostring(err))
-        end
-        -- Temporary delay to give the background cloud reset a chance to complete
-        -- before local status notifications trigger cloud state synchronization.
-        ngx.sleep(3)
-        return __clear_local_reset_data()
-    end
-
     local ret = __reset_remote_network()
     if type(ret) == 'table' and ret.err_code == 0 then
         return __clear_local_reset_data()
@@ -1929,6 +1734,14 @@ function M.reset(params)
     return ret
 end
 
+local function IPRB_role_is_inited()
+    local c = uci.cursor()
+    local identity = c:get("mptun", "IPRB", "identity") or ''
+    local attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
+
+    return identity == 'primary' or identity == 'secondary' or
+        attempt_to_be == 'primary' or attempt_to_be == 'secondary'
+end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 --[[
     @method-type: call
@@ -1951,9 +1764,9 @@ function M.get_started(params)
     else
         return { err_code = -1, err_msg = "invalid params !" }
     end
-    local ret = IPRB_sub_mode_init({ sub_mode = "classic" })
-    if ret.err_code ~= 0 then
-        return ret
+    local ret = IPRB_role_is_inited()
+    if ret then
+        return { err_code = -2, err_msg = "is inited !" }
     end
     local opt = {
         attempt_to_be = attempt_to_be
@@ -2129,74 +1942,19 @@ end
 
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 local function snoop_response_identity_verification(resp)
-    local function reset_remote_network_and_init_am(am_identity, reset_fail_msg)
-        local reset_ret
-        local reset_ok = false
-
-        set_AM_reseting(true, true)
-        reset_ret = __reset_remote_network()
-        if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
-            set_AM_reseting(false)
-            if type(reset_fail_msg) == 'string' then
-                debug_event_to_file(reset_fail_msg .. tostring(reset_ret and reset_ret.err_msg))
-            end
-            return false
-        end
-
-        for _ = 1, 5 do
-            ngx.sleep(1)
-            if is_AM_reset_finished() then
-                reset_ok = true
-                break
-            end
-        end
-
-        if not reset_ok then
-            -- Keep auto_reset for a late AW_net_stoped_by_cloud callback.
-            return false
-        end
-
-        reset_ret = M.am_init({ identity = am_identity })
-        if type(reset_ret) == 'table' and reset_ret.err_code ~= nil and reset_ret.err_code ~= 0 then
-            return false
-        end
-
-        return true
-    end
-
     local ret = parse_response_identity_verification(resp)
     if type(ret) == "table" and ret.err_code == 0 then
         local c = uci.cursor()
-        local current_mode = c:get("mptun", "global", "service_mode") or ""
         if ret.mode == 'IPRB' then
-            local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
-            local identity = c:get("mptun", "IPRB", "identity") or ''
-            local am_local_use_exit = c:get("mptun", "IPRB", "am_local_use_exit") or ''
-            if ret.sub_mode == 'AstroMesh' and current_mode == "" then
-                -- Temporary implementation: default to controller because the local AstroMesh role
-                -- cannot be determined reliably here after reset.
-                if sub_mode ~= 'AstroMesh' then
-                    debug_event_to_file("reset remote Astromesh net: " .. tostring(ret.sub_mode) ..
-                        " current_mode: " .. tostring(current_mode) .. " sub_mode: " .. tostring(sub_mode))
-                    M.reset()
-                    return {}
-                elseif sub_mode == 'AstroMesh' and identity ~= 'primary' and identity ~= 'secondary' then
-                    debug_event_to_file("reset remote Astromesh net for uninitialized primary: " ..
-                        tostring(ret.sub_mode) ..
-                        " current_mode: " .. tostring(current_mode) .. " sub_mode: " .. tostring(sub_mode) ..
-                        " identity: " .. tostring(identity))
-                    reset_remote_network_and_init_am("controller",
-                        "failed to reset remote AstroMesh state for uninitialized AstroMesh role. ")
-                    return {}
+            if ret.sub_mode == 'AstroMesh' then
+                local reset_ret = __reset_remote_network()
+                ngx.sleep(2)
+                if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
+                    debug_event_to_file(
+                        "failed to reset remote AstroMesh network: " ..
+                        tostring(reset_ret and reset_ret.err_msg)
+                    )
                 end
-            elseif ret.sub_mode == 'classic' and current_mode == "" and sub_mode == 'AstroMesh' then
-                -- Temporary implementation: default to controller because the local AstroMesh role
-                -- cannot be determined reliably here after reset.
-                local am_identity = "controller"
-                debug_event_to_file("reset remote residual AstroMesh state for IPRB sub_mode: " ..
-                    tostring(ret.sub_mode) ..
-                    " current_mode: " .. tostring(current_mode) .. " sub_mode: " .. tostring(sub_mode))
-                reset_remote_network_and_init_am(am_identity, "failed to reset remote residual AstroMesh state: ")
                 return {}
             end
             local opt = {}
@@ -2204,18 +1962,7 @@ local function snoop_response_identity_verification(resp)
             opt.attempt_to_be = tostring(ret.identity)
             opt.active = tostring(ret.active)
             opt.net_id = tostring(ret.net_id)
-            if sub_mode == 'AstroMesh' then
-                if am_local_use_exit == '' then
-                    opt.am_local_use_exit = tostring(ret.use_exit)
-                    opt.use_exit = tostring(ret.use_exit)
-                elseif (tostring(am_local_use_exit) == '1' and tostring(ret.use_exit) == '0') then
-                    M.set_use_exit_node({ enabled = true })
-                elseif (tostring(am_local_use_exit) == '0' and tostring(ret.use_exit) == '1') then
-                    M.set_use_exit_node({ enabled = false })
-                end
-            else
-                opt.use_exit = tostring(ret.use_exit)
-            end
+            opt.use_exit = tostring(ret.use_exit)
 
             -- If the local enabled status is unclear, update it according to the cloud status.
             local disabled = c:get("mptun", "IPRB", "disabled")
@@ -2226,9 +1973,6 @@ local function snoop_response_identity_verification(resp)
                     opt.disabled = tostring('1')
                 end
             end
-            if sub_mode == '' then
-                opt.sub_mode = tostring(ret.sub_mode)
-            end
             if ret.mode ~= nil and (ret.mode == 'classic' or ret.mode == 'IPRB') then
                 set_service_mode(tostring(ret.mode))
             end
@@ -2238,19 +1982,7 @@ local function snoop_response_identity_verification(resp)
         elseif ret.mode == 'classic' then
             set_service_mode(tostring(ret.mode))
         end
-        --Temporarily implement it here.
-        c:load("mptun")
-        local tmp_service_mode = c:get("mptun", "global", "service_mode") or ''
-        local tmp_sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
-        local tmp_identity = c:get("mptun", "IPRB", "identity") or ''
-        local resource_reported = c:get("mptun", "IPRB", "resource_reported") == '1'
-        if tmp_service_mode == 'IPRB' and tmp_sub_mode == 'AstroMesh' and tmp_identity == 'primary' and resource_reported ~= true then
-            local tmp_ret = report_local_accessible_net_resource()
-            if type(tmp_ret) == 'table' and tmp_ret.err_code == nil then
-                c:set("mptun", "IPRB", "resource_reported", "1")
-                c:commit("mptun")
-            end
-        end
+
     end
 end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
@@ -2327,6 +2059,7 @@ function M.get_node_info(params)
         if type(ret) ~= "table" then
             return { err_code = -2, err_msg = "fail!" }
         end
+        ret.sub_mode = nil
     else
         return { err_code = -1, err_msg = "fail!" }
     end
@@ -2383,7 +2116,7 @@ function M.report_event_to_mptun(params)
                 end
             end
         end
-    elseif event_class == 'network' then
+    elseif event_class == 'network' and enable_extend_feature then
         deal_network_event(event_info)
     end
     return {}
@@ -2398,18 +2131,13 @@ local function pre_deal_aw_stop_by_cloud()
             service_mode = c:get("mptun", "global", "service_mode") or '',
             identity = c:get("mptun", "IPRB", "identity") or '',
             be_kicked_out = false,
-            should_clear_local = c:get("mptun", "IPRB", "reseting") == '1',
-            should_send_removed = false,
-            auto_reset = c:get("mptun", "IPRB", "auto_reset") == '1',
-            sub_mode = c:get("mptun", "IPRB", "sub_mode") or '',
             attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or '',
         }
     end
 
     local ctx = read_ctx()
 
-    -- During auto reset, avoid repopulating local UCI from stale cloud state.
-    if ctx.service_mode == '' and not ctx.should_clear_local then
+    if ctx.service_mode == '' then
         __get_IPRB_status()
         c:load("mptun")
         ctx = read_ctx()
@@ -2421,14 +2149,11 @@ local function pre_deal_aw_stop_by_cloud()
         c:set("mptun", "IPRB", "active", "0")
         c:set("mptun", "IPRB", "state", "stoped")
 
-        -- During local reset cleanup, avoid touching cloud state again.
         local rpc_resp
         local rpc_err_code
-        if not ctx.should_clear_local then
-            -- get_node_info failure indicates the local role has already lost its cloud-side network membership.
-            rpc_resp = M.get_node_info()
-            rpc_err_code = rpc_resp and rpc_resp.err_code and tonumber(rpc_resp.err_code)
-        end
+        -- get_node_info failure indicates the local role has already lost its cloud-side network membership.
+        rpc_resp = M.get_node_info()
+        rpc_err_code = rpc_resp and rpc_resp.err_code and tonumber(rpc_resp.err_code)
         --Failed to obtain IPRB information; indicates the user has been kicked out of the network.
         if rpc_err_code ~= nil and rpc_err_code < 0 then
             if identity == "primary" or identity == "secondary" then
@@ -2443,10 +2168,6 @@ local function pre_deal_aw_stop_by_cloud()
             c:set("mptun", "IPRB", "state", "unset")
         end
         c:commit("mptun")
-        if ctx.be_kicked_out and ctx.sub_mode == 'AstroMesh' then
-            ctx.should_clear_local = true
-        end
-        ctx.should_send_removed = ctx.should_clear_local and not ctx.auto_reset
     end
 
     ctx.should_clear_classic = resolved_service_mode ~= "IPRB"
@@ -2458,18 +2179,9 @@ function M.AW_net_stoped_by_cloud()
     local c = uci.cursor()
     local ctx = pre_deal_aw_stop_by_cloud()
     debug_event_to_file(" into AW_net_stoped_by_cloud: service_mode: " .. tostring(ctx.service_mode) ..
-        " be_kicked_out: " .. tostring(ctx.be_kicked_out) .. " auto_reset: " .. tostring(ctx.auto_reset) ..
-        " sub_mode: " .. tostring(ctx.sub_mode) .. " attempt_to_be: " .. tostring(ctx.attempt_to_be) ..
-        " should_clear_local: " .. tostring(ctx.should_clear_local) ..
-        " should_send_removed: " .. tostring(ctx.should_send_removed) ..
+        " be_kicked_out: " .. tostring(ctx.be_kicked_out) ..
+        " attempt_to_be: " .. tostring(ctx.attempt_to_be) ..
         " should_clear_classic: " .. tostring(ctx.should_clear_classic))
-    if ctx.should_clear_local then
-        __clear_local_reset_data()
-        debug_event_to_file(" subrouter allready clear local reset data !!")
-        if ctx.should_send_removed then
-            ubus.send('mptun.removed', {})
-        end
-    end
     if ctx.should_clear_classic then
         c:delete("mptun", "global", "service_mode")
         c:commit("mptun")
@@ -2502,624 +2214,5 @@ pre_req_func[req_path["req_access_by_code"]] = pre_req_access_by_code
 snoop_func[req_path["req_get_identity"]] = snoop_response_identity_verification
 snoop_func[req_path["req_access_by_code"]] = snoop_response_access_by_code
 snoop_func[req_path["req_get_access_code"]] = snoop_response_get_access_code
-
-local function am_decode_info_from_resp(res, expected_type)
-    if res == nil or res.err_code ~= 0 then
-        return res
-    end
-
-    local ok = false
-    local res_table
-    if res.body then
-        ok, res_table = pcall(cjson.decode, res.body)
-    end
-
-    if not ok or type(res_table) ~= 'table' then
-        return { err_code = -100, err_msg = "empty response!" }
-    end
-
-    if res_table.code ~= nil and type(res_table.code) == 'number' then
-        local specific_error = am_specific_error_code[res_table.code]
-        if type(specific_error) == 'table' then
-            return {
-                err_code = specific_error.err_code,
-                err_msg = specific_error.err_msg
-            }
-        end
-    end
-    if expected_type ~= nil and type(res_table.info) ~= expected_type then
-        return { err_code = -100, err_msg = "empty response!" }
-    end
-
-    if type(res_table.info) == 'table' then
-        local ret = am_convert_info_keys_to_snake(res_table.info)
-        if ret.err_code ~= 0 then
-            return ret
-        end
-
-        return ret.info
-    end
-
-    return res_table.info
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function check_AM_has_right_identity(identity)
-    return check_AW_has_right_identity(identity)
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: am_get_net_info
-    @method-desc: get AstroMesh network info.
-    @out string     network_id          Network ID
-    @out string     network_plan        Network plan type
-    @out string     plan_code           Plan code
-    @out bool       primary_device      Whether current device is primary
-    @out number     traffic_data_usage  Used traffic
-    @out number     traffic_data_monthly Monthly traffic limit
-    @out number     network_status      Network status
-    @out bool       enable_status       Whether network is enabled
-    @out bool       use_internet_exit   Whether use internet exit
-    @out number     ?err_code           Error Code
-    @out string     ?err_msg            Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_get_net_info",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"network_id":"48afafafaf","network_plan":"IPRB","plan_code":"007","primary_device":true,"traffic_data_usage":60,"traffic_data_monthly":60,"network_status":1,"enable_status":false,"use_internet_exit":true,"latest_access_time":1749914605906}}
---]]
-function M.am_get_net_info()
-    local res = get_info_from_cloud()
-    if res.err_code ~= 0 then
-        return res
-    else
-        local ok = false
-        local res_table
-        if res and res.body then
-            ok, res_table = pcall(cjson.decode, res.body)
-        end
-        if not ok or type(res_table) ~= 'table' or type(res_table.info) ~= 'table' then
-            return { err_code = -100, err_msg = "empty response!" }
-        end
-
-        local ret = am_convert_info_keys_to_snake(res_table.info)
-        if ret.err_code ~= 0 then
-            return ret
-        end
-
-        return ret.info
-    end
-end
-
---[[
-    @method-type: call
-    @method-name: am_get_status
-    @method-desc: Obtain AstroMesh mode related status information.
-    @out string     status.enabled                  enabled or not
-    @out string     status.identity                 identity: controller or subrouter or null
-    @out string     status.state                    state: connecting or connected
-    @out string     status.attempt_to_be            primary or secondary or null. The role temporarily selected by the user on the initial page, will be replaced by the identity field after the actual role is confirmed.
-    @out string     status.be_kicked_out            for subrouter, be kicked out or not
-    @out string     status.is_p2p                   Indicates whether a p2p connection has been established.
-    @out string     status.lastConnectedTime        Timestamp of the last successful tunnel establishment.
-    @out number     ?err_code                       Error Code
-    @out string     ?err_msg                        Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_get_status",{}]}
-    @out-example: {"id":15,"jsonrpc":"2.0","result":{"status":{"lastConnectedTime":"1769678361","is_p2p":"0","be_kicked_out":"0","attempt_to_be":"secondary","state":"connected","identity":"subrouter","enabled":"1"}}}
---]]
-function M.am_get_status(params)
-    local IPRB_status = __get_IPRB_status()
-
-    if type(IPRB_status) == 'table' and type(IPRB_status.status) == 'table' and
-        type(IPRB_status.status.identity) == 'string' then
-        if IPRB_status.status.identity == 'primary' then
-            IPRB_status.status.identity = 'controller'
-        elseif IPRB_status.status.identity == 'secondary' then
-            IPRB_status.status.identity = 'subrouter'
-        end
-    end
-    return IPRB_status
-end
---[[
-    @method-type: call
-    @method-name: am_init
-    @method-desc: initialize AstroMesh mode.
-    @in string      identity                controller or subrouter
-    @out number     ?err_code               Error Code
-    @out string     ?err_msg                Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_init",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.am_init(params)
-    if type(params) ~= 'table' or type(params.identity) ~= 'string' then
-        return { err_code = -1, err_msg = "invalid params !" }
-    end
-    local identity = params.identity
-    if identity ~= 'controller' and identity ~= 'subrouter' then
-        return { err_code = -1, err_msg = "invalid params !" }
-    end
-    local ret = IPRB_sub_mode_init({ sub_mode = "AstroMesh" })
-    if ret.err_code ~= 0 then
-        return ret
-    end
-    if identity == "controller" or identity == "subrouter" then
-        local accessiable_ifname_list = {}
-        table.insert(accessiable_ifname_list, "lan")
-        local opt = {
-            sub_mode = "AstroMesh",
-            accessiable_ifname = accessiable_ifname_list
-        }
-        set_IPRB_option(opt)
-        push_status_to_wb()
-    end
-    return {}
-end
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: am_get_dynamic_code
-    @method-desc: get AstroMesh dynamic code.
-    @out string     dynamic_code            Dynamic code
-    @out number     expiration_remainder    Remaining validity duration
-    @out number     ?err_code               Error Code
-    @out string     ?err_msg                Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_get_dynamic_code",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"dynamic_code":"6AC4521","expiration_remainder":11111111}}
---]]
-function M.am_get_dynamic_code()
-    local node_info = M.get_node_info()
-    local c = uci.cursor()
-    local current_mode = c:get("mptun", "global", "service_mode") or ''
-    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
-    local identity = c:get("mptun", "IPRB", "identity") or ''
-    local cloud_info_ready = type(node_info) == 'table' and type(node_info.info) == 'table' and
-        node_info.info.err_code == 0
-
-    if current_mode == 'IPRB' and sub_mode == 'AstroMesh' and identity == 'secondary' then
-        if cloud_info_ready then
-            local reset_ret
-            local reset_ok = false
-
-            set_AM_reseting(true, true)
-            reset_ret = __reset_remote_network()
-            if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
-                set_AM_reseting(false)
-                return { err_code = -1, err_msg = "already exist network and reset fail !" }
-            end
-
-            for _ = 1, 5 do
-                ngx.sleep(1)
-                if is_AM_reset_finished() then
-                    reset_ok = true
-                    break
-                end
-            end
-
-            if not reset_ok then
-                -- Keep auto_reset for a late AW_net_stoped_by_cloud callback.
-                return { err_code = -1, err_msg = "wait reset timeout !" }
-            end
-            -- Local reset data is expected to be cleared by AW_net_stoped_by_cloud after the cloud stop event arrives.
-            -- set_AM_reseting(false)
-            -- __clear_local_reset_data()
-            reset_ret = M.am_init({ identity = "controller" })
-            if type(reset_ret) == 'table' and reset_ret.err_code ~= nil and reset_ret.err_code ~= 0 then
-                return reset_ret
-            end
-        else
-            debug_event_to_file("am_get_dynamic_code clear local AstroMesh state because cloud info is unavailable")
-            __clear_local_reset_data()
-            local init_ret = M.am_init({ identity = "controller" })
-            if type(init_ret) == 'table' and init_ret.err_code ~= nil and init_ret.err_code ~= 0 then
-                return init_ret
-            end
-        end
-        ngx.sleep(1)
-    end
-    local req_opt = {
-        ["req_method"] = "POST",
-        ["req_path"] = req_path["req_get_access_code"],
-        ["req_body"] = {
-            ["creationChannel"] = creationChannel["AstroMesh"]
-        }
-    }
-    local res = __raw_request(req_opt)
-    if res.err_code ~= 0 then
-        return res
-    else
-        --If execution reaches this point, it indicates that communication is functioning normally, so try reporting the resource.
-        --Temporarily implement it here.
-        local resource_reported = c:get("mptun", "IPRB", "resource_reported") == '1'
-        if resource_reported ~= true then
-            local ret = report_local_accessible_net_resource()
-            if type(ret) == 'table' and ret.err_code == nil then
-                c:set("mptun", "IPRB", "resource_reported", "1")
-                c:commit("mptun")
-            end
-        end
-        local ok = false
-        local res_table
-        if res and res.body then
-            ok, res_table = pcall(cjson.decode, res.body)
-        end
-        if not ok or type(res_table) ~= 'table' or type(res_table.info) ~= 'table' then
-            return { err_code = -100, err_msg = "empty response!" }
-        end
-
-        if type(res_table.info.dynamicCode) ~= 'string' or not is_valid_dynamic_code(res_table.info.dynamicCode) then
-            return { err_code = -101, err_msg = "invalid dynamicCode format!" }
-        end
-
-        local opt = {}
-        opt.sub_mode = "AstroMesh"
-        opt.attempt_to_be = "primary"
-        set_IPRB_option(opt)
-        debug_event_to_file("controller set sub_net via get dynamic code ~~~~")
-
-        local ret = am_convert_info_keys_to_snake(res_table.info)
-        if ret.err_code ~= 0 then
-            return ret
-        end
-
-        return ret.info
-    end
-end
-
---[[
-    @method-type: call
-    @method-name: am_get_sub_list
-    @method-desc: get AstroMesh secondary device list.
-    @out array      result                  Secondary device list
-    @out string     result.secondary_id     Secondary device MAC without separators, e.g. aabbccddeeff
-    @out string     result.name             Secondary device name
-    @out string     result.secondary_type   Secondary device type
-    @out number     result.latest_access_time Latest access time
-    @out string     result.connect_status   Connect status
-    @out number     ?err_code               Error Code
-    @out string     ?err_msg                Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_get_sub_list",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": [{"secondary_id":"aabbccddee01","name":"sub1","secondary_type":"device","latest_access_time":1787452777409,"connect_status":"001"}]}
---]]
-function M.am_get_sub_list()
-    local res = __raw_request({
-        ["req_method"] = "POST",
-        ["req_path"] = req_path["req_get_seconds_list"]
-    })
-
-    return am_decode_info_from_resp(res, 'table')
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: am_join_net_by_dynamic_code
-    @method-desc: join AstroMesh network with dynamic code.
-    @in string      dynamic_code            Dynamic code
-    @out bool       verify_result           Verify result
-    @out number     lock_time               Lock time
-    @out bool       device_limit_exceeded   Whether device limit exceeded
-    @out bool       plan_expired            Whether plan expired
-    @out number     ?err_code               Error Code
-    @out string     ?err_msg                Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_join_net_by_dynamic_code",{"dynamic_code":"5ACACA"}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"verify_result":false,"lock_time":1749576598667,"device_limit_exceeded":true,"plan_expired":false}}
---]]
-function M.am_join_net_by_dynamic_code(params)
-    local dynamic_code = params and (params.dynamic_code or params.dynamicCode)
-
-    if type(dynamic_code) ~= 'string' or not is_valid_dynamic_code(dynamic_code) then
-        return { err_code = -1, err_msg = "invalid params !" }
-    end
-
-    local node_info = M.get_node_info()
-    local c = uci.cursor()
-    local current_mode = c:get("mptun", "global", "service_mode") or ''
-    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
-    local cloud_info_ready = type(node_info) == 'table' and type(node_info.info) == 'table' and
-        node_info.info.err_code == 0
-    if current_mode == 'IPRB' and sub_mode == 'AstroMesh' then
-        local am_identity = "subrouter"
-        if cloud_info_ready then
-            local reset_ret
-            local reset_ok = false
-
-            set_AM_reseting(true, true)
-            reset_ret = __reset_remote_network()
-            if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
-                set_AM_reseting(false)
-                return { err_code = -1, err_msg = "already exist network and reset fail !" }
-            end
-
-            for _ = 1, 5 do
-                ngx.sleep(1)
-                if is_AM_reset_finished() then
-                    reset_ok = true
-                    break
-                end
-            end
-
-            if not reset_ok then
-                -- Keep auto_reset for a late AW_net_stoped_by_cloud callback.
-                return { err_code = -1, err_msg = "wait reset timeout !" }
-            end
-            -- Local reset data is expected to be cleared by AW_net_stoped_by_cloud after the cloud stop event arrives.
-            -- set_AM_reseting(false)
-            -- __clear_local_reset_data()
-            reset_ret = M.am_init({ identity = am_identity })
-            if type(reset_ret) == 'table' and reset_ret.err_code ~= nil and reset_ret.err_code ~= 0 then
-                return reset_ret
-            end
-        else
-            debug_event_to_file(
-                "am_join_net_by_dynamic_code clear local AstroMesh state because cloud info is unavailable")
-            __clear_local_reset_data()
-            local init_ret = M.am_init({ identity = am_identity })
-            if type(init_ret) == 'table' and init_ret.err_code ~= nil and init_ret.err_code ~= 0 then
-                return init_ret
-            end
-        end
-        ngx.sleep(1)
-    end
-    local opt = {}
-    opt.sub_mode = "AstroMesh"
-    set_IPRB_option(opt)
-
-    debug_event_to_file("subrouter set sub_net via join net ~~~~")
-    local res = __raw_request({
-        ["req_method"] = "POST",
-        ["req_path"] = req_path["req_access_by_code"],
-        ["req_body"] = {
-            ["dynamicCode"] = dynamic_code,
-            ["creationChannel"] = creationChannel["AstroMesh"]
-        }
-    })
-
-    local result = am_decode_info_from_resp(res, 'table')
-    return result
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: am_kickout_sub
-    @method-desc: remove secondary device from AstroMesh network.
-    @in string      secondary_id            Secondary device MAC without separators, e.g. aabbccddeeff
-    @in string      secondary_type          Secondary device type
-    @out bool       result                  Remove success or not
-    @out number     ?err_code               Error Code
-    @out string     ?err_msg                Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_kickout_sub",{"secondary_id":"aabbccddee29","secondary_type":"device"}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": true}
---]]
-function M.am_kickout_sub(params)
-    if not check_AM_has_right_identity("controller") then
-        return { err_code = -2, err_msg = "invalid identity !" }
-    end
-
-    local secondary_id = params and (params.secondary_id or params.secondaryId)
-    local secondary_type = params and (params.secondary_type or params.secondaryType)
-
-    if type(secondary_id) ~= 'string' or secondary_id == '' or
-        type(secondary_type) ~= 'string' or secondary_type == '' then
-        return { err_code = -1, err_msg = "invalid params !" }
-    end
-
-    local res = __raw_request({
-        ["req_method"] = "POST",
-        ["req_path"] = req_path["req_remove_second"],
-        ["req_body"] = {
-            ["secondaryId"] = secondary_id,
-            ["secondaryType"] = secondary_type
-        }
-    })
-
-    return am_decode_info_from_resp(res, 'boolean')
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: am_sub_get_route_policy
-    @method-desc: get AstroMesh route policy for secondary.
-    @out string     mode                    Route policy mode(all/sub)
-    @out number     ?err_code               Error Code
-    @out string     ?err_msg                Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_sub_get_route_policy",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"mode":"all"}}
---]]
-function M.am_sub_get_route_policy()
-    if not check_AM_has_right_identity("subrouter") then
-        return { err_code = -2, err_msg = "invalid identity !" }
-    end
-    local c = uci.cursor()
-    local use_exit = c:get("mptun", "IPRB", "use_exit") or '1'
-    if use_exit == '' then
-        use_exit = '1'
-    end
-
-    local am_local_use_exit = c:get("mptun", "IPRB", "am_local_use_exit") or ''
-    if am_local_use_exit ~= '' then
-        local enabled
-        if (tostring(am_local_use_exit) == '1' and tostring(use_exit) == '0') then
-            enabled = true
-        elseif (tostring(am_local_use_exit) == '0' and tostring(use_exit) == '1') then
-            enabled = false
-        end
-        if enabled ~= nil then
-            ngx.timer.at(0, function(premature)
-                if not premature then
-                    M.set_use_exit_node({ enabled = enabled })
-                end
-            end)
-        end
-        use_exit = am_local_use_exit
-    end
-
-    if use_exit == '0' then
-        return { mode = 'sub' }
-    else
-        return { mode = 'all' }
-    end
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: am_sub_set_route_policy
-    @method-desc: set AstroMesh route policy for secondary.
-    @in string      mode                    Route policy mode(all/sub)
-    @out bool       result                  Set success or not
-    @out number     ?err_code               Error Code
-    @out string     ?err_msg                Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_sub_set_route_policy",{"mode":"all"}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.am_sub_set_route_policy(params)
-    if not check_AM_has_right_identity("subrouter") then
-        return { err_code = -2, err_msg = "invalid identity !" }
-    end
-    local c = uci.cursor()
-    local enabled
-    if params == nil or type(params.mode) ~= 'string' then
-        return { err_code = -1, err_msg = "invalid params !" }
-    end
-
-    if params.mode == 'all' then
-        enabled = true
-    elseif params.mode == 'sub' then
-        enabled = false
-    else
-        return { err_code = -1, err_msg = "invalid params !" }
-    end
-
-    local old_am_local_use_exit = c:get("mptun", "IPRB", "am_local_use_exit")
-    local option = {}
-    if enabled then
-        option.am_local_use_exit = '1'
-    else
-        option.am_local_use_exit = '0'
-    end
-    --option.identity = 'secondary'
-    set_IPRB_option(option)
-    push_status_to_wb()
-    local ret = M.set_use_exit_node({ enabled = enabled })
-    if type(ret) == 'table' and ret.err_code ~= nil then
-        if ret.err_code ~= -1 then
-            if old_am_local_use_exit == nil then
-                set_IPRB_option({ am_local_use_exit = '1' })
-            else
-                set_IPRB_option({ am_local_use_exit = old_am_local_use_exit })
-            end
-            push_status_to_wb()
-            return ret
-        end
-    end
-
-    return {}
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: am_rename_sub_node
-    @method-desc: rename AstroMesh secondary device.
-    @in string      secondary_id            Secondary device MAC without separators, e.g. aabbccddeeff
-    @in string      alias_name              New alias name
-    @out bool       result                  Rename success or not
-    @out number     ?err_code               Error Code
-    @out string     ?err_msg                Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_rename_sub_node",{"secondary_id":"aabbccddeeff","alias_name":"aaaaa"}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": true}
---]]
-function M.am_rename_sub_node(params)
-    if not check_AM_has_right_identity("controller") then
-        return { err_code = -2, err_msg = "invalid identity !" }
-    end
-
-    local secondary_id = params and (params.secondary_id or params.secondaryId)
-    local alias_name = params and (params.alias_name or params.aliasName)
-
-    if type(secondary_id) ~= 'string' or secondary_id == '' or
-        type(alias_name) ~= 'string' or alias_name == '' then
-        return { err_code = -1, err_msg = "invalid params !" }
-    end
-
-    local res = __raw_request({
-        ["req_method"] = "POST",
-        ["req_path"] = req_path["req_second_rename"],
-        ["req_body"] = {
-            ["secondaryId"] = secondary_id,
-            ["aliasName"] = alias_name
-        }
-    })
-
-    return am_decode_info_from_resp(res, 'boolean')
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: am_start_remote_net
-    @method-desc: start AstroMesh remote network.
-    @in string      identity                controller or subrouter
-    @out number     ?err_code               Error Code
-    @out string     ?err_msg                Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_start_remote_net",{"identity":"controller"}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.am_start_remote_net(params)
-    if not check_AM_has_right_identity(params and params.identity) then
-        return { err_code = -2, err_msg = "invalid identity !" }
-    end
-
-    if params.identity == 'controller' then
-        return __start_service({})
-    end
-    debug_event_to_file(tostring(params.identity) .. " send start !!")
-    return __start_connect({})
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: am_stop_remote_net
-    @method-desc: stop AstroMesh remote network.
-    @in string      identity                controller or subrouter
-    @out number     ?err_code               Error Code
-    @out string     ?err_msg                Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_stop_remote_net",{"identity":"subrouter"}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.am_stop_remote_net(params)
-    if not check_AM_has_right_identity(params and params.identity) then
-        return { err_code = -2, err_msg = "invalid identity !" }
-    end
-
-    if params.identity == 'controller' then
-        return __pause_service({})
-    end
-    debug_event_to_file(tostring(params.identity) .. " send stop !!")
-    return __pause_connect({})
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: am_exit_remote_net
-    @method-desc: exit AstroMesh remote network.
-    @in string      identity                controller or subrouter
-    @out number     ?err_code               Error Code
-    @out string     ?err_msg                Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "am_exit_remote_net",{"identity":"controller"}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.am_exit_remote_net(params)
-    local c = uci.cursor()
-    local sub_mode = c:get("mptun", "IPRB", "sub_mode") or ''
-    if sub_mode ~= 'AstroMesh' and sub_mode ~= '' then
-        return { err_code = -2, err_msg = "invalid sub_mode !" }
-    end
-    debug_event_to_file(tostring(params.identity) .. " is resetting ~~")
-    return M.reset({})
-end
 
 return M
