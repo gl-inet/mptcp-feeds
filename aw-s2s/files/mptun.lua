@@ -1729,7 +1729,11 @@ end
 function M.reset(params)
     local ret = __reset_remote_network()
     if type(ret) == 'table' and ret.err_code == 0 then
-        return __clear_local_reset_data()
+        local result = __clear_local_reset_data()
+        ngx.timer.at(0, function()
+            ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
+        end)
+        return result
     end
     return ret
 end
