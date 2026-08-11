@@ -345,6 +345,13 @@ local function set_service_mode(mode)
         return -1
     end
 end
+local function notify_gl_cloud_module_detached()
+    return ubus.call('gl-session', 'call', {
+        module = 'cloud',
+        func = 'notify_module_detached',
+        params = { module = 'mptun' }
+    })
+end
 local function set_IPRB_option(opt)
     local c = uci.cursor()
     if not opt then
@@ -1021,6 +1028,12 @@ function M.AW_get_global_summary(params)
         if ret.mode == 'classic' or ret.mode == 'IPRB' then
             result.enabled = ret.enabled
             result.mode = ret.mode
+        end
+    else
+        local c = uci.cursor()
+        local attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
+        if attempt_to_be == 'primary' or attempt_to_be == 'secondary' then
+            result.mode = 'IPRB'
         end
     end
     return result
@@ -1733,6 +1746,7 @@ function M.reset(params)
         ngx.timer.at(0, function()
             ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
         end)
+        notify_gl_cloud_module_detached()
         return result
     end
     return ret
@@ -2189,6 +2203,7 @@ function M.AW_net_stoped_by_cloud()
     if ctx.should_clear_classic then
         c:delete("mptun", "global", "service_mode")
         c:commit("mptun")
+        notify_gl_cloud_module_detached()
     end
     push_status_to_wb()
     __push_global_summary_to_wb()
