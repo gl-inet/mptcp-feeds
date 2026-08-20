@@ -685,10 +685,7 @@ end
 
 local function __raw_request(params)
     local c = uci.cursor()
-    local base_url = c:get("mptun", "global", "base_url") or 'https://api.astrowarp.net'
-    if not base_url then
-        return { err_code = -6, err_msg = 'invalid base_url.' }
-    end
+    local base_url = c:get("mptun", "global", "base_url") or 'https://goodpas-api.gl-inet.com'
 
     local cloud_token = c:get("gl-cloud", "@cloud[0]", "token") or nil
     if not cloud_token then
