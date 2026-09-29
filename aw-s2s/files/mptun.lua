@@ -1737,13 +1737,19 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.reset(params)
+    local c = uci.cursor()
+    -- Cache the mode before reset clears it to determine whether a network exists.
+    local service_mode_before_reset = c:get("mptun", "global", "service_mode") or ''
     local ret = __reset_remote_network()
     if type(ret) == 'table' and ret.err_code == 0 then
         local result = __clear_local_reset_data()
         ngx.timer.at(0, function()
             ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
         end)
-        notify_gl_cloud_module_detached()
+        -- no networks
+        if service_mode_before_reset == '' then
+            notify_gl_cloud_module_detached()
+        end
         return result
     end
     return ret
@@ -2057,7 +2063,7 @@ end
     @out string     info.use_exit       for secondary, use exit node or not
     @out string     ?info.net_id        id of this network
     @out number     info.err_code       parse result code inside info, 0 means success
-    @out number     ?err_code   Error Code
+    @out number     ?err_code   Error Code: -1 means communication error
     @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_node_info",{}]}
     @out-example: {"id":15,"jsonrpc":"2.0","result":{"info":{"mode":"IPRB","use_exit":"0","active":"1","err_code":0,"identity":"primary","net_id":"7c3e7da5dc2413e8e8ff7f6bdde31cab"}}}
@@ -2170,7 +2176,7 @@ local function pre_deal_aw_stop_by_cloud()
         rpc_resp = M.get_node_info()
         rpc_err_code = rpc_resp and rpc_resp.err_code and tonumber(rpc_resp.err_code)
         --Failed to obtain IPRB information; indicates the user has been kicked out of the network.
-        if rpc_err_code ~= nil and rpc_err_code < 0 then
+        if rpc_err_code ~= nil and rpc_err_code ~= -1 then
             if identity == "primary" or identity == "secondary" then
                 c:set("mptun", "IPRB", "attempt_to_be", identity)
                 c:delete("mptun", "IPRB", "identity")
