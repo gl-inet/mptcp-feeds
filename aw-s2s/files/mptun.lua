@@ -384,6 +384,135 @@ local function net_topology_is_exist()
     return false
 end
 
+-- Best-effort local snapshot; each observation is collected independently.
+-- Missing mpifd_pid means stopped or unavailable. Missing interfaces means
+-- unavailable; an empty interfaces/addresses list means a successful empty result.
+local function collect_runtime_status()
+    -- Returns a running mpifd PID, or nil if unavailable.
+    local function collect_mpifd_pid()
+        -- oui.ubus may yield, so do not wrap it in Lua 5.1 pcall.
+        local services, err = ubus.call("service", "list", { name = "mpifd" })
+        if err or type(services) ~= "table" then return nil end
+
+        local service = services.mpifd
+        if type(service) ~= "table" or type(service.instances) ~= "table" then return nil end
+        for _, instance in pairs(service.instances) do
+            if type(instance) == "table" and instance.running == true and
+                type(instance.pid) == "number" and instance.pid > 0 then
+                return instance.pid
+            end
+        end
+        return nil
+    end
+
+    -- Returns the configured tunnel's actual kernel state, or nil if unavailable.
+    local function collect_runtime_interfaces()
+        local c = uci.cursor()
+        local name = c:get("mptun", "global", "mptun")
+        if c.close then c:close() end
+        if name == nil or name == "" then name = "mptun0" end
+        -- Linux interface names are at most 15 bytes; accept simple device names only.
+        if type(name) ~= "string" or #name > 15 or
+            not name:match("^[%w_][%w_.%-]*$") then
+            return nil
+        end
+
+        -- Pass the interface name as one argument, without shell interpolation.
+        local process = ngx.pipe.spawn({ "ip", "-j", "address", "show", "dev", name }, {
+            merge_stderr = true, stdout_read_timeout = 2000, wait_timeout = 2000
+        })
+        if not process then return nil end
+        local output = process:stdout_read_all()
+        if not output and process.kill then process:kill(9) end
+        local ok, reason, status = process:wait()
+        if not ok and reason ~= "exit" and reason ~= "signal" and process.kill then
+            process:kill(9)
+            process:wait()
+        end
+        -- Firmware's command proxy returns output from wait(), not an exit tuple.
+        -- Its stdout_read_timeout also bounds the command's execution.
+        if not output or not ok or
+            (type(ok) ~= "string" and (reason ~= "exit" or status ~= 0)) then
+            return nil
+        end
+
+        local decoded, devices = pcall(cjson.decode, output)
+        if not decoded or type(devices) ~= "table" or not output:match("^%s*%[") then
+            return nil
+        end
+        local interfaces = {}
+        for _, device in ipairs(devices) do
+            if type(device) ~= "table" or type(device.ifname) ~= "string" or
+                type(device.flags) ~= "table" or type(device.addr_info) ~= "table" then
+                return nil
+            end
+            local interface = { name = device.ifname, up = false, addresses = {} }
+            for _, flag in ipairs(device.flags) do
+                if flag == "UP" then interface.up = true end
+            end
+            for _, address in ipairs(device.addr_info) do
+                if type(address) ~= "table" then return nil end
+                if address.family == "inet" or address.family == "inet6" then
+                    if type(address["local"]) ~= "string" or type(address.prefixlen) ~= "number" then
+                        return nil
+                    end
+                    interface.addresses[#interface.addresses + 1] = {
+                        family = address.family,
+                        address = address["local"],
+                        prefixlen = address.prefixlen
+                    }
+                end
+            end
+            interfaces[#interfaces + 1] = interface
+        end
+        return interfaces
+    end
+
+    local result = {}
+    local pid = collect_mpifd_pid()
+    if type(pid) == "number" and pid > 0 and pid % 1 == 0 then
+        result.mpifd_pid = pid
+    end
+
+    local interfaces = collect_runtime_interfaces()
+    if type(interfaces) == "table" then
+        result.interfaces = interfaces
+    end
+    return result
+end
+
+-- Checks local readiness only, not peer connectivity. Missing observations
+-- return false; callers must account for queries failing or startup in progress.
+local function is_mptun_running()
+    local c = uci.cursor()
+    local enabled = c:get("mptun", "global", "enable")
+    local interface_name = c:get("mptun", "global", "mptun")
+    if c.close then c:close() end
+    if enabled ~= "1" then return false end
+    if interface_name == nil or interface_name == "" then interface_name = "mptun0" end
+    local status = collect_runtime_status()
+    if not status.mpifd_pid or not status.interfaces then
+        return false
+    end
+
+    for _, interface in ipairs(status.interfaces) do
+        if interface.name == interface_name and interface.up then
+            for _, address in ipairs(interface.addresses) do
+                if address.family == "inet" then
+                    local a, b, c, d = address.address:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+                    if a and tonumber(a) <= 255 and tonumber(b) <= 255 and
+                        tonumber(c) <= 255 and tonumber(d) <= 255 and
+                        address.prefixlen >= 0 and address.prefixlen <= 32 and
+                        address.prefixlen % 1 == 0 then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
 --[[
     @method-type: call
     @method-name: set_config
@@ -879,6 +1008,22 @@ local function IPRB_is_enabled()
             return false
         end
     end
+end
+
+--[[
+    @method-type: call
+    @method-name: is_IPRB_actual_running
+    @method-desc: Check whether enabled IPRB has a running mpifd and an UP tunnel with IPv4; does not check peer connectivity.
+    @out bool running True when local IPRB runtime conditions are met; false when disabled, stopped, or observations are unavailable.
+    @in-example: {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","is_IPRB_actual_running",{}]}
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{"running":true}}
+--]]
+function M.is_IPRB_actual_running()
+    if not IPRB_is_enabled() then
+        return { running = false }
+    end
+
+    return { running = is_mptun_running() }
 end
 
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
