@@ -4,94 +4,138 @@ TYPE="EDGE"
 DEBUG_SERVER="$(cat /etc/mptun/debugip 2>/dev/null)"
 listenPort=""
 AW_P2P_PORT='58080'
+AW_WIFI_SYNC_PORT='58081'
 
 AW_DNS_PORT='1553'
 DNS_MARK=$(uci -q get mptun.global.dns_mark || echo 0x8)
 
+SPEEDTEST_INTERFACE='mptun0'
+SPEEDTEST_IPT_CHAIN='MPTUN_SPEEDTEST'
+SPEEDTEST_ENABLED='0'
+SPEEDTEST_IP=''
+SPEEDTEST_PORT=''
+SPEEDTEST_SOURCE_IPS=''
+
 AW_TMP_DIR="/tmp/run/aw_tmp_dir"
 mkdir -p ${AW_TMP_DIR}
-
-PATH_AW_NOTICE_INFO="${AW_TMP_DIR}/notice_info"
-mkdir -p ${PATH_AW_NOTICE_INFO}
 
 use_fw4='0'
 [ -n "$(which fw4)" ] && use_fw4='1'
 
 service_mode="$(uci -q get mptun.global.service_mode)"
-[ "${service_mode}" = '' ] && service_mode='classic'
-IPRB_identity="$(uci -q get mptun.IPRB.identity)"
+IPRB_identity=''
+IPRB_enabled=''
+proxy_private_net='0'
+LAN_PRIVATE_ARP_STATE='/var/run/mptun-lan-proxy-arp'
 
-notify_IPRB_status() {
-    (
-        # shellcheck disable=SC3023
-        exec 1000>&-
-        exec </dev/null >/dev/null 2>&1
-        curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","push_IPRB_status_to_wb",{}]}' >/dev/null 2>&1
-    ) &
-}
-
-push_aw_notice_info() {
-    (
-        # shellcheck disable=SC3023
-        exec 1000>&-
-        exec </dev/null >/dev/null 2>&1
-        curl -H 'glinet: 1' -s -k http://127.0.0.1/rpc -d '{"jsonrpc":"2.0","id":15,"method":"call","params":["","mptun","AW_push_notification_msg",{}]}' >/dev/null 2>&1
-    ) &
-}
-
-is_conflict_resource() {
-    local route_ip="$1"
-    local route_line=""
-
-    [ -z "$route_ip" ] && {
-        echo "0"
-        return 0
-    }
-
-    route_line="$(ip route get "$route_ip" 2>/dev/null | head -n 1)"
-    [ -z "$route_line" ] && {
-        echo "0"
-        return 0
-    }
-
-    echo "$route_line" | grep -q ' via ' && {
-        echo "0"
-        return 0
-    }
-
-    echo "$route_line" | grep -Eq ' dev mptun[^ ]*' && {
-        echo "0"
-        return 0
-    }
-
-    echo "1"
-}
-
-write_resource_net_conflict_notice() {
-    local conflict_resource_list="$1"
-    local notice_file="${PATH_AW_NOTICE_INFO}/resource_net_conflict"
-    local item net_json=""
-
-    if [ -z "$conflict_resource_list" ]; then
-        rm -f "$notice_file"
-        return 0
+# This bridge table is independent of fw3/fw4 and never sets routing marks.
+clean_lan_private_l3() {
+    local previous tables
+    local cleanup_result=0
+    if [ -f "$LAN_PRIVATE_ARP_STATE" ]; then
+        previous="$(cat "$LAN_PRIVATE_ARP_STATE")"
+        case "$previous" in
+            0|1)
+                if [ -e /proc/sys/net/ipv4/conf/br-lan/proxy_arp_pvlan ]; then
+                    sysctl -w "net.ipv4.conf.br-lan.proxy_arp_pvlan=$previous" >/dev/null || {
+                        logger -t mptun 'failed to restore LAN proxy ARP'
+                        cleanup_result=1
+                    }
+                fi
+                ;;
+            *)
+                logger -t mptun 'invalid saved LAN proxy ARP state'
+                cleanup_result=1
+                ;;
+        esac
     fi
 
-    for item in $(echo "$conflict_resource_list" | sed 's/,/ /g'); do
-        [ -z "$item" ] && continue
-        net_json="${net_json}${net_json:+, }\"$item\""
-    done
-
-    cat >"$notice_file" <<EOF
-{
-    "net": [${net_json}]
+    # Remove interception even if ARP restoration failed; keep state for retry.
+    if command -v nft >/dev/null 2>&1; then
+        tables="$(nft list tables)" || return 1
+        if printf '%s\n' "$tables" | grep -qx 'table bridge lan_private_ipv4_to_l3'; then
+            nft delete table bridge lan_private_ipv4_to_l3 || return 1
+        fi
+    elif [ -f "$LAN_PRIVATE_ARP_STATE" ]; then
+        logger -t mptun 'nft unavailable while cleaning LAN private forwarding'
+        return 1
+    fi
+    [ "$cleanup_result" = '0' ] || return 1
+    rm -f "$LAN_PRIVATE_ARP_STATE"
 }
+
+sync_lan_private_l3() {
+    local bridge_mac previous
+    if [ "$proxy_private_net" != '1' ]; then
+        clean_lan_private_l3
+        return $?
+    fi
+
+    command -v nft >/dev/null 2>&1 || {
+        logger -t mptun 'nft is required for LAN private forwarding'
+        return 1
+    }
+    bridge_mac="$(cat /sys/class/net/br-lan/address)" || return 1
+    printf '%s\n' "$bridge_mac" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$' || return 1
+    previous="$(cat /proc/sys/net/ipv4/conf/br-lan/proxy_arp_pvlan)" || return 1
+    case "$previous" in 0|1) ;; *) return 1 ;; esac
+    # Preserve the original value across repeated updates and script invocations.
+    if [ ! -f "$LAN_PRIVATE_ARP_STATE" ]; then
+        (umask 077; printf '%s\n' "$previous" > "$LAN_PRIVATE_ARP_STATE") || return 1
+    fi
+
+    # Create/flush/rebuild in one transaction: no duplicates or forwarding gap.
+    # OpenWrt may lack /dev/stdin, which nft uses for "-f -".
+    if ! nft -f /proc/self/fd/0 <<EOF
+    add table bridge lan_private_ipv4_to_l3
+    flush table bridge lan_private_ipv4_to_l3
+    table bridge lan_private_ipv4_to_l3 {
+        chain prerouting {
+            type filter hook prerouting priority -300; policy accept;
+            meta ibrname "br-lan" \
+                ether type ip \
+                ether daddr & 01:00:00:00:00:00 == 00:00:00:00:00:00 \
+                ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } \
+                ether daddr != $bridge_mac \
+                counter ether daddr set $bridge_mac meta pkttype set host
+        }
+    }
 EOF
+    then
+        logger -t mptun 'failed to install LAN private forwarding rules'
+        clean_lan_private_l3
+        return 1
+    fi
+    if ! sysctl -w net.ipv4.conf.br-lan.proxy_arp_pvlan=1 >/dev/null; then
+        logger -t mptun 'failed to enable LAN proxy ARP'
+        clean_lan_private_l3
+        return 1
+    fi
 }
 
-clean_resource_net_conflict_notice() {
-    local notice_file="${PATH_AW_NOTICE_INFO}/resource_net_conflict"
-    rm -f "$notice_file"
+# 启动和 WG 事件需要有效配置；停止清理不依赖 status 或 reset 后的归属。
+load_IPRB_config() {
+    local iprb_status
+    IPRB_identity=''
+    IPRB_enabled=''
+    proxy_private_net='0'
+    if [ -z "$service_mode" ]; then
+        logger -t mptun 'service_mode is empty'
+        return 1
+    fi
+    [ "$service_mode" = 'IPRB' ] || return 0
+
+    iprb_status="$(ubus -t 5 call gl-session call '{"module":"mptun","func":"get_IPRB_status","params":{}}' 2>/dev/null)"
+    IPRB_identity="$(jsonfilter -s "$iprb_status" -e '@.result.status.identity' 2>/dev/null)"
+    IPRB_enabled="$(jsonfilter -s "$iprb_status" -e '@.result.status.enabled' 2>/dev/null)"
+    if [ -z "$IPRB_identity" ] || [ "$IPRB_enabled" != '0' -a "$IPRB_enabled" != '1' ]; then
+        logger -t mptun 'failed to get IPRB status'
+        return 1
+    fi
+    if [ "$(jsonfilter -s "$iprb_status" -e '@.result.status.data.proxy_private_net' 2>/dev/null)" = 'true' ]; then
+        proxy_private_net='1'
+    fi
+    return 0
 }
 
 gateway_set_tcptun() {
@@ -243,12 +287,6 @@ set_udptun() {
     ip link add dev "${DEV}" type "$proto_type"
     [ -n "$MTU" ] && ip link set mtu "$MTU" "${DEV}" 
     $WG_TOOL setconf "${DEV}" "${TMPFILE}" || return 1
-    [ "${service_mode}" = "IPRB" ] && {
-        uci set mptun.IPRB.state="connecting"
-        uci -q delete mptun.IPRB.lastConnectedTime
-        uci commit mptun
-        notify_IPRB_status
-    }
     ip address add dev "${DEV}" "${Address}" || return 1
     ip link set up dev "${DEV}" || return 1
 
@@ -265,11 +303,67 @@ set_udptun() {
 
 FW4_FILE_MPTUN_POST_RULESET='/usr/share/nftables.d/ruleset-post/aw_set_fw4.nft'
 FILE_AW_DNS_RULE="${AW_TMP_DIR}/aw_dns_rule"
+normalize_speedtest_list()
+{
+    echo "$1" | sed 's/[，,]/ /g; s/[[:space:]]\+/ /g'
+}
+
+get_speedtest_ipv4()
+{
+    normalize_speedtest_list "$1" | tr ' ' '\n' | sed 's#/.*##' |
+        grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true
+}
+
+get_speedtest_source_ips()
+{
+    normalize_speedtest_list "$1" | tr ' ' '\n' |
+        grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$' || true
+}
+
+init_speedtest_config()
+{
+    local cfg="$1"
+    local dev="$2"
+    local address_list source_ips speedtest_ip speedtest_port
+
+    SPEEDTEST_ENABLED='0'
+    SPEEDTEST_IP=''
+    SPEEDTEST_PORT=''
+    SPEEDTEST_SOURCE_IPS=''
+
+    [ "$service_mode" = 'IPRB' ] || return 0
+    [ "$IPRB_identity" = 'primary' ] || return 0
+    [ "$(uci -q get mptun.global.enable_speedtest)" != '0' ] || return 0
+    [ "${dev:-mptun0}" = "$SPEEDTEST_INTERFACE" ] || return 0
+
+    address_list=$(jsonfilter -i "$cfg" -q -e '@.udpTun.interface.address')
+    speedtest_ip="$(get_speedtest_ipv4 "$address_list")"
+
+    source_ips=$(jsonfilter -i "$cfg" -q -e '@.udpTun.interface.allowedSrc')
+    source_ips="$(get_speedtest_source_ips "$source_ips")"
+    [ -n "$speedtest_ip" ] && [ -n "$source_ips" ] || return 0
+
+    speedtest_port="$(uci -q get mptun.global.speedtest_port)"
+    case "$speedtest_port" in
+        ''|*[!0-9]*) speedtest_port='5201' ;;
+        *)
+            [ "$speedtest_port" -ge 1 ] 2>/dev/null &&
+                [ "$speedtest_port" -le 65535 ] 2>/dev/null ||
+                speedtest_port='5201'
+            ;;
+    esac
+
+    SPEEDTEST_IP="$speedtest_ip"
+    SPEEDTEST_PORT="$speedtest_port"
+    SPEEDTEST_SOURCE_IPS="$source_ips"
+    SPEEDTEST_ENABLED='1'
+}
+
 set_firewall()
 {
     local cfg="$1"
     local DEV="$2"
-    local srcips destips localips exitnode type enable_p2p
+    local srcips destips localips exitnode type enable_p2p speedtest_source
     local use_exit=$(uci -q get mptun.global.use_exit)
     local i=0
 
@@ -311,8 +405,8 @@ set_firewall()
 
     if [ "${service_mode}" = 'IPRB' ] ;then
         alllow_restricted_forward='0'
-        # generic IPRB mode, just allowes icmp.
-        input_only_mptun_icmp='1'
+        # Allow all input protocols from localips in IPRB mode.
+        input_only_mptun_icmp='0'
         forward_just_deal_DNAT='0'
     fi
 
@@ -333,18 +427,6 @@ set_firewall()
     uci set firewall.guest2mptun.src='guest'
     uci set firewall.guest2mptun.dest='mptun'
 
-    if [ "$use_fw4" = '1' ] ;then
-        echo "insert rule inet fw4 forward iifname \"br-*\" oifname \"${DEV:=mptun0}\" counter accept" >>"$FW4_FILE_MPTUN_POST_RULESET"
-    else
-        uci set firewall.br2mptun=rule
-        uci set firewall.br2mptun.name='accept br-+ to mptun'
-        uci set firewall.br2mptun.src='*'
-        uci set firewall.br2mptun.dest='mptun'
-        uci set firewall.br2mptun.proto='any'
-        uci set firewall.br2mptun.extra="-i br-+"
-        uci set firewall.br2mptun.target="ACCEPT"
-    fi
-
     # IPRB mode, as the primary, allows DNS.
     if [ "${service_mode}" = 'IPRB' -a "${IPRB_identity}" = 'primary' ] ;then
         uci set firewall.mptun_allowe_dns=rule
@@ -364,13 +446,63 @@ set_firewall()
         uci set firewall.mptun_allowe_aw_p2p.target='ACCEPT'
     fi
 
+    # Wi-Fi sync access control belongs to the tunnel firewall.
+    local wifi_sync_ip wifi_sync_sources wifi_sync_source
+    uci -q delete firewall.mptun_wifi_sync
+    uci -q delete firewall.mptun_wifi_sync_forward
+    if [ "$service_mode" = 'IPRB' ]; then
+        if [ "$IPRB_identity" = 'primary' ] &&
+            [ "$(uci -q get mptun.global.enable_wifi_sync)" != '0' ]; then
+            wifi_sync_ip=$(echo "$v4_addr_list" | head -n 1)
+            wifi_sync_sources=$(echo "$localips" | tr ' ' '\n' |
+                grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$')
+            if [ -n "$wifi_sync_ip" ]; then
+                uci set firewall.mptun_wifi_sync=rule
+                uci set firewall.mptun_wifi_sync.name='mptun wifi sync'
+                uci set firewall.mptun_wifi_sync.src='mptun'
+                uci set firewall.mptun_wifi_sync.family='ipv4'
+                uci set firewall.mptun_wifi_sync.proto='tcp'
+                uci set firewall.mptun_wifi_sync.dest_ip="$wifi_sync_ip"
+                uci set firewall.mptun_wifi_sync.dest_port="$AW_WIFI_SYNC_PORT"
+                # An empty source list must never become an unrestricted ACCEPT.
+                if [ -n "$wifi_sync_sources" ]; then
+                    uci set firewall.mptun_wifi_sync.target='ACCEPT'
+                else
+                    uci set firewall.mptun_wifi_sync.target='DROP'
+                fi
+                for wifi_sync_source in $wifi_sync_sources; do
+                    uci add_list firewall.mptun_wifi_sync.src_ip="$wifi_sync_source"
+                done
+            fi
+        elif [ "$IPRB_identity" = 'secondary' ]; then
+            # Same first valid target as fetch; never omit dest_ip and block all peers.
+            wifi_sync_ip=$(jsonfilter -i /etc/mp_connection_info -q -e '@.connection[*].target' |
+                awk -F. 'NF == 4 && $0 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ &&
+                    $1 <= 255 && $2 <= 255 && $3 <= 255 && $4 <= 255 &&
+                    ($1 + $2 + $3 + $4) > 0 { print; exit }')
+            if [ -n "$wifi_sync_ip" ]; then
+                uci set firewall.mptun_wifi_sync_forward=rule
+                uci set firewall.mptun_wifi_sync_forward.name='mptun wifi sync forward'
+                uci set firewall.mptun_wifi_sync_forward.src='*'
+                uci set firewall.mptun_wifi_sync_forward.dest='mptun'
+                uci set firewall.mptun_wifi_sync_forward.family='ipv4'
+                uci set firewall.mptun_wifi_sync_forward.proto='tcp'
+                uci set firewall.mptun_wifi_sync_forward.dest_ip="$wifi_sync_ip"
+                uci set firewall.mptun_wifi_sync_forward.dest_port="$AW_WIFI_SYNC_PORT"
+                uci set firewall.mptun_wifi_sync_forward.target='DROP'
+            else
+                logger -t mptun 'wifi sync forwarding rule skipped: primary IPv4 unavailable'
+            fi
+        fi
+    fi
+
     uci set firewall.mptun_local_rule=rule
     uci set firewall.mptun_local_rule.name='mptun local rule'
     uci set firewall.mptun_local_rule.src="mptun"
     uci -q delete firewall.mptun_local_rule.proto
     uci add_list firewall.mptun_local_rule.proto='all'
 
-    # Forwarding is not allowed by default in IPRB mode.
+    # Allow forwarding to all zones outside IPRB; IPRB primaries allow forwarding to LAN.
     if [ "${service_mode}" != 'IPRB' ] ;then
         uci set firewall.mptun_forward_rule=rule
         uci set firewall.mptun_forward_rule.name='mptun forward rule'
@@ -379,6 +511,16 @@ set_firewall()
         uci -q delete firewall.mptun_forward_rule.proto
         uci add_list firewall.mptun_forward_rule.proto="all"
         uci set firewall.mptun_forward_rule.target="ACCEPT"
+    else
+        if [ "$service_mode" = 'IPRB' -a "$IPRB_identity" = 'primary' ]; then
+            uci set firewall.mptun_forward_rule=rule
+            uci set firewall.mptun_forward_rule.name='mptun forward rule'
+            uci set firewall.mptun_forward_rule.src="mptun"
+            uci set firewall.mptun_forward_rule.dest="lan"
+            uci -q delete firewall.mptun_forward_rule.proto
+            uci add_list firewall.mptun_forward_rule.proto="all"
+            uci set firewall.mptun_forward_rule.target="ACCEPT"
+        fi
     fi
 
     [ "$exitnode" = "true" -o "$type" = "EXIT" ] && {
@@ -423,6 +565,7 @@ set_firewall()
     fi
 
     uci -q delete firewall.mptun_local_rule.src_ip
+    uci -q delete firewall.mptun_local_rule.dest_ip
     for i in $localips;do
         uci add_list firewall.mptun_local_rule.src_ip="$i"
     done
@@ -433,9 +576,11 @@ set_firewall()
         if [ "${input_only_mptun_icmp}" = '1' ] ;then
             uci -q delete firewall.mptun_local_rule.proto
             uci add_list firewall.mptun_local_rule.proto='icmp'
-            for addr in "$v4_addr_list" ;do
-                uci add_list firewall.mptun_local_rule.dest_ip="$addr"
-            done
+            if [ "$service_mode" != 'IPRB' -o "$IPRB_identity" != 'primary' ]; then
+                for addr in "$v4_addr_list" ;do
+                    uci add_list firewall.mptun_local_rule.dest_ip="$addr"
+                done
+            fi
         fi
     fi
 
@@ -465,6 +610,23 @@ set_firewall()
         uci set firewall.mptun2mptun.src='mptun'
         uci set firewall.mptun2mptun.dest='mptun'
     }
+
+    # NFQUEUE handles the initial SYN; this rule permits the full connection
+    # after the userspace activator accepts it.
+    uci -q delete firewall.mptun_speedtest
+    if [ "$SPEEDTEST_ENABLED" = '1' ]; then
+        uci set firewall.mptun_speedtest='rule'
+        uci set firewall.mptun_speedtest.name='mptun speedtest'
+        uci set firewall.mptun_speedtest.src='mptun'
+        uci set firewall.mptun_speedtest.family='ipv4'
+        uci set firewall.mptun_speedtest.proto='tcp'
+        uci set firewall.mptun_speedtest.dest_ip="$SPEEDTEST_IP"
+        uci set firewall.mptun_speedtest.dest_port="$SPEEDTEST_PORT"
+        uci set firewall.mptun_speedtest.target='ACCEPT'
+        for speedtest_source in $SPEEDTEST_SOURCE_IPS; do
+            uci add_list firewall.mptun_speedtest.src_ip="$speedtest_source"
+        done
+    fi
 
     [ "$type" = "GATEWAY" ] && {
         ip rule del from all iif mptun0 lookup mptcp_mptun0 2>/dev/null
@@ -498,6 +660,20 @@ set_firewall()
         fi
     }
 
+    # Recreate after the Wi-Fi sync DROP to preserve rule order on reload.
+    uci -q delete firewall.br2mptun
+    uci set firewall.br2mptun=rule
+    uci set firewall.br2mptun.name='accept br-+ to mptun'
+    uci set firewall.br2mptun.src='*'
+    uci set firewall.br2mptun.dest='mptun'
+    uci set firewall.br2mptun.proto='any'
+    uci set firewall.br2mptun.target='ACCEPT'
+    if [ "$use_fw4" = '1' ]; then
+        uci set firewall.br2mptun.device='br-*'
+        uci set firewall.br2mptun.direction='in'
+    else
+        uci set firewall.br2mptun.extra='-i br-+'
+    fi
 
     uci commit firewall
     /etc/init.d/firewall reload 2>/dev/null
@@ -589,6 +765,7 @@ gen_nft_script() {
     local tcpmark="$6"
     local udpmark="$7"
     local exit_is_dev=""
+    local speedtest_source
     local TCP_PROXY_PORT="1080"
     local MPPROTO="tcp,udp"
 
@@ -605,14 +782,11 @@ gen_nft_script() {
     local mptun_flow_mark="$(printf '0x%x' $((tcpmark | lanmark)))"
     local mptun_flow_mark_mask_inv="$(printf '0x%x' $((~mptun_flow_mark & 0xffffffff)))"
 
-    local item mproxy_set="" conflict_resource_list=""
+    local item mproxy_set=""
     for item in $(echo "$udp_route_ips" | sed 's/,/ /g'); do
         if [ "$item" = "0.0.0.0/0" -o "$item" = "::/0" ]; then
             logger -t mptun "ignore 0.0.0.0/0 route"
         else
-            if [ "$(is_conflict_resource "$item")" = "1" ]; then
-                conflict_resource_list="${conflict_resource_list}${conflict_resource_list:+,}${item}"
-            fi
             if [ -z "$mproxy_set" ]; then
                 mproxy_set="$item"
             else
@@ -620,9 +794,6 @@ gen_nft_script() {
             fi
         fi
     done
-
-    write_resource_net_conflict_notice "$conflict_resource_list"
-    push_aw_notice_info
 
     #Prevent mproxy_set from being empty and causing nft script exception
     [ -z "$mproxy_set" ] && mproxy_set='224.0.0.1'
@@ -652,7 +823,11 @@ gen_nft_script() {
 
     fw4_init_set_context "/var/run/mptun.nft" "ip mpnet" || return 1
 
-    fw4_set_create_member_of_table "set" "mproxy_privateip" "type ipv4_addr; flags interval; elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }"
+    local privateip_options='type ipv4_addr; flags interval;'
+    if [ "$proxy_private_net" = '0' ]; then
+        privateip_options="$privateip_options elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 };"
+    fi
+    fw4_set_create_member_of_table "set" "mproxy_privateip" "$privateip_options"
     fw4_set_create_member_of_table "set" "mproxy_set" "type ipv4_addr; flags interval; elements = { $mproxy_set }"
     fw4_set_create_member_of_table "set" "mproxy_skip" "type ipv4_addr; flags interval; elements = { $skip_addr }"
     fw4_set_create_member_of_table "set" "mproxy_mac_skip" "type ether_addr; flags interval;"
@@ -662,6 +837,15 @@ gen_nft_script() {
     fw4_set_create_chain "MPROXY_PREROUTING" "type filter hook prerouting priority mangle; policy accept;"
     fw4_set_create_chain "FORWARD" "type filter hook forward priority mangle; policy accept;"
     fw4_set_create_chain "POSTROUTING" "type filter hook postrouting priority srcnat; policy accept;"
+
+    if [ "$SPEEDTEST_ENABLED" = '1' ]; then
+        fw4_set_create_chain "SPEEDTEST_INPUT" \
+            "type filter hook input priority -1; policy accept;"
+        for speedtest_source in $SPEEDTEST_SOURCE_IPS; do
+            fw4_set_add_append_statement \
+                "add rule $FW4_TABLE_NAME SPEEDTEST_INPUT iifname \"$SPEEDTEST_INTERFACE\" ip saddr $speedtest_source ip daddr $SPEEDTEST_IP tcp dport $SPEEDTEST_PORT ct state new tcp flags & (fin | syn | rst | ack) == syn counter queue num $SPEEDTEST_PORT"
+        done
+    fi
 
     fw4_set_add_append_statement "add rule $FW4_TABLE_NAME MPROXY_PREROUTING iifname != \"br-*\" accept"
     [ -n "$use_exit" ] && {
@@ -685,6 +869,7 @@ gen_nft_script() {
 
     local domains="$(jsonfilter -i $policy_file -e '@.alwaysUseLocalExitDomainList')"
     [ -n "$domains" ] && set_domain_policy "$domains"
+    return 0
 }
 
 set_ipt_script() {
@@ -695,7 +880,7 @@ set_ipt_script() {
     local tcptun_is_exist="$5"
     local tcpmark="$6"
     local udpmark="$7"
-    local conflict_resource_list=""
+    local speedtest_source
 
     local use_exit=$(uci -q get mptun.global.use_exit)
 
@@ -705,22 +890,18 @@ set_ipt_script() {
         if [ "$ip" = "0.0.0.0/0" ];then
             logger -t mptun "ignore 0.0.0.0/0 route"
         else
-            if [ "$(is_conflict_resource "$ip")" = "1" ]; then
-                conflict_resource_list="${conflict_resource_list}${conflict_resource_list:+,}${ip}"
-            fi
             ipset add mproxy_set $ip
         fi
     done
 
-    write_resource_net_conflict_notice "$conflict_resource_list"
-    push_aw_notice_info
-
     local private_ip="192.168.0.0/16 10.0.0.0/8 172.16.0.0/12"
     ipset create mproxy_privateip hash:net 2>/dev/null
     ipset flush  mproxy_privateip 2>/dev/null
-    for ip in `echo $private_ip|sed 's/,/ /g'`;do
-        ipset add mproxy_privateip $ip
-    done
+    if [ "$proxy_private_net" = '0' ]; then
+        for ip in $private_ip; do
+            ipset add mproxy_privateip "$ip"
+        done
+    fi
 
     #local skip_ip="127.0.0.1/32 224.0.0.0/4 255.255.255.255/32 169.254.0.0/16 192.0.2.0/24 198.18.0.0/15 $servers"
     local skip_ip="127.0.0.1/32 224.0.0.0/4 255.255.255.255/32 169.254.0.0/16 192.0.2.0/24 198.18.0.0/15"
@@ -734,6 +915,21 @@ set_ipt_script() {
     ipset flush mproxy_mac_skip 2>/dev/null
  
     local IPTW="iptables -w 5"
+    $IPTW -t mangle -D INPUT -j "$SPEEDTEST_IPT_CHAIN" 2>/dev/null
+    $IPTW -t mangle -F "$SPEEDTEST_IPT_CHAIN" 2>/dev/null
+    $IPTW -t mangle -X "$SPEEDTEST_IPT_CHAIN" 2>/dev/null
+    if [ "$SPEEDTEST_ENABLED" = '1' ]; then
+        $IPTW -t mangle -N "$SPEEDTEST_IPT_CHAIN"
+        for speedtest_source in $SPEEDTEST_SOURCE_IPS; do
+            $IPTW -t mangle -A "$SPEEDTEST_IPT_CHAIN" \
+                -i "$SPEEDTEST_INTERFACE" -s "$speedtest_source" \
+                -d "$SPEEDTEST_IP" -p tcp --dport "$SPEEDTEST_PORT" \
+                -m conntrack --ctstate NEW --syn \
+                -j NFQUEUE --queue-num "$SPEEDTEST_PORT"
+        done
+        $IPTW -t mangle -I INPUT 1 -j "$SPEEDTEST_IPT_CHAIN"
+    fi
+
     $IPTW -t mangle -N MPROXY_PREROUTING 2>/dev/null
     $IPTW -t mangle -F MPROXY_PREROUTING 2>/dev/null
     $IPTW -t mangle -C PREROUTING -j MPROXY_PREROUTING 2>/dev/null
@@ -828,9 +1024,9 @@ set_proxy() {
     }
  
     if [ "${use_fw4}" = '1' ];then
-        gen_nft_script "$servers" "$tcp_route_ips" "$udp_route_ips" "$udp_global_proto" "$tcptun_is_exist" "$2" "$3"
+        gen_nft_script "$servers" "$tcp_route_ips" "$udp_route_ips" "$udp_global_proto" "$tcptun_is_exist" "$2" "$3" || return 1
         set_dns
-        fw4_set_finish_and_apply
+        fw4_set_finish_and_apply || return 1
     else
         set_ipt_script "$servers" "$tcp_route_ips" "$udp_route_ips" "$udp_global_proto" "$tcptun_is_exist" "$2" "$3"
     fi
@@ -890,17 +1086,25 @@ mptun_init() {
     local tcpmark=$4
     TYPE="$(jsonfilter -i $cfg -q -e  '@.type' || echo EDGE)"
 
+    # Stop intercepting before rebuilding the disabled private-network policy.
+    if [ "$proxy_private_net" != '1' ]; then
+        clean_lan_private_l3 || return 1
+    fi
     stop_conflict_service
 
+    init_speedtest_config "$cfg" "$dev"
     set_tcptun "$cfg"
     set_udptun "$cfg" "$dev" "$udpmark"
     set_firewall "$cfg" "$dev"
-    set_proxy "$cfg" "$tcpmark" "$udpmark"
+    set_proxy "$cfg" "$tcpmark" "$udpmark" || return 1
     sync
-    /etc/init.d/firewall reload 2>/dev/null
+    /etc/init.d/firewall reload 2>/dev/null || return 1
+    sync_lan_private_l3
 }
 
 clean_proxy() {
+    local cleanup_result=0
+    clean_lan_private_l3 || cleanup_result=1
     #rm  /etc/nftables.d/mptcp-proxy.nft 2>/dev/null
     /usr/bin/proxy-route.sh "clean" 2>/dev/null
     if [ "${use_fw4}" = '1' ];then
@@ -918,9 +1122,20 @@ clean_proxy() {
     fi
     ip rule del from all iif mptun0 lookup mptcp_mptun0 2>/dev/null
     [ -e /var/run/mpnode.json ] && rm /var/run/mpnode.json
+    return "$cleanup_result"
 }
 
 clean_udptun() {
+    # Remove the speedtest trigger even if the switch is off or the zone is absent.
+    if [ "${use_fw4}" = '1' ]; then
+        nft flush chain ip mpnet SPEEDTEST_INPUT 2>/dev/null
+        nft delete chain ip mpnet SPEEDTEST_INPUT 2>/dev/null
+    else
+        local IPTW="iptables -w 5"
+        $IPTW -t mangle -D INPUT -j "$SPEEDTEST_IPT_CHAIN" 2>/dev/null
+        $IPTW -t mangle -F "$SPEEDTEST_IPT_CHAIN" 2>/dev/null
+        $IPTW -t mangle -X "$SPEEDTEST_IPT_CHAIN" 2>/dev/null
+    fi
     [ -n "$(uci -q get firewall.mptun)" ] && {
         uci -q del firewall.mptun
         uci -q del firewall.lan2mptun
@@ -928,6 +1143,8 @@ clean_udptun() {
         uci -q del firewall.mptun_local_rule
         uci -q del firewall.mptun_forward_rule
         uci -q del firewall.mptun_allow_listen
+        uci -q del firewall.mptun_wifi_sync
+        uci -q del firewall.mptun_wifi_sync_forward
         uci -q del firewall.mptun2mptun
         uci -q del firewall.mptun2wan
         uci -q del firewall.dns_mptun
@@ -941,6 +1158,7 @@ clean_udptun() {
 
         uci -q del firewall.mptun_allowe_dns
         uci -q del firewall.mptun_allowe_aw_p2p
+        uci -q del firewall.mptun_speedtest
 
         uci commit firewall
         /etc/init.d/firewall reload 2>/dev/null
@@ -958,33 +1176,19 @@ clean_udptun() {
     local DEV
     config_get DEV "global" "mptun" "mptun0"
     ip link del dev "${DEV}" 2>/dev/null
-    [ "${service_mode}" = "IPRB" ] && {
-        uci -q set mptun.IPRB.state="disconnected"
-        uci commit mptun
+    # reset 已清空模式时，仍需删除旧隧道的临时文件。
+    [ "${service_mode}" = "IPRB" -o -z "${service_mode}" ] && {
         rm -rf /tmp/wireguard/"${DEV}"
-        notify_IPRB_status
     }
 }
 
-clean_p2p_info(){
-    [ -n "$(ps|grep gl-p2p-daemon|grep -v grep)" ] && kill $(pgrep gl-p2p-daemon) 2>/dev/null
-}
-do_mode_specific_cleanup() {
-    if [ "${service_mode}" = "classic" ]; then
-        uci -q delete mptun.global.service_mode
-        uci commit mptun
-    fi
-}
-
 mptun_clean() {
-    clean_proxy
+    local cleanup_result=0
+    clean_proxy || cleanup_result=1
     clean_udptun
-    clean_p2p_info
     remove_dns
-    do_mode_specific_cleanup
     sync
-
-    clean_resource_net_conflict_notice
+    return "$cleanup_result"
 }
 
 get_wan_name() {

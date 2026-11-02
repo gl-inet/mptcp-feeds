@@ -1,21 +1,12 @@
 [ ! -f "/etc/config/mptun" ] && exit
 
 migrate_IPRB_sub_mode() {
-    local service_mode="$(uci -q get mptun.global.service_mode)"
-    local global_enable="$(uci -q get mptun.global.enable)"
-    local sub_mode="$(uci -q get mptun.IPRB.sub_mode)"
+    # 字段存在即为新版配置；空值或 0 不作为旧版本处理。
+    uci -q get mptun.IPRB.inited >/dev/null && return 0
 
-    if [ "$sub_mode" = 'AstroMesh' ]; then
-        uci -q delete mptun.IPRB
-        uci -q delete mptun.global.service_mode
-        uci -q set mptun.global.enable='0'
-    else
-        uci -q delete mptun.IPRB.sub_mode
-        if [ -z "$service_mode" -a "$global_enable" = '1' ]; then
-            uci -q set mptun.global.service_mode='classic'
-        fi
-    fi
-
+    uci -q delete mptun.global.service_mode
+    uci -q delete mptun.IPRB
+    uci -q set mptun.global.need_sync='1'
     uci commit mptun
 }
 

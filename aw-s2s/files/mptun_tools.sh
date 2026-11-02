@@ -1,5 +1,31 @@
 #!/bin/sh
 
+get_IPRB_identity() {
+    local model
+    model="$(cat /proc/gl-hw-info/model 2>/dev/null)" || {
+        echo "Failed to read IPRB device model" >&2
+        return 1
+    }
+
+    # Remove leading and trailing whitespace, preserving the model itself.
+    model="${model#"${model%%[![:space:]]*}"}"
+    model="${model%"${model##*[![:space:]]}"}"
+    case "$model" in
+        mt3000) echo secondary ;;
+        mt6000) echo primary ;;
+        *)
+            echo "Empty or unsupported IPRB device model" >&2
+            return 1
+            ;;
+    esac
+}
+
+# Identity lookup exits before UCI and firewall policy initialization.
+if [ "$1" = 'get_IPRB_identity' ]; then
+    get_IPRB_identity
+    exit $?
+fi
+
 TABLE_NAME="mptun_tools"
 IPT_CHAIN_NAME="MPTUN_SKIP_POLICY"
 IPTW="iptables -w 5"
@@ -16,8 +42,14 @@ UDP_MARK_MASK_REVERSE="$(printf '0x%x' $((~UDP_MARK & 0xffffffff)))"
 DNS_MARK_MASK_REVERSE="$(printf '0x%x' $((~DNS_MARK & 0xffffffff)))"
 
 usage() {
-    echo "usage:
-    mptun_tools option arg1 arg2 arg3 ..."
+    echo "Usage: mptun_tools <command> [arguments]
+Commands:
+    get_IPRB_identity          Print secondary for mt3000 or primary for mt6000
+    mac_skip_policy <mac>      Skip mptun policy for the specified device
+    mac_restore_policy <mac>   Restore mptun policy for the specified device
+    skip_policy               Skip mptun policy for all devices
+    restore_policy            Restore mptun policy for all devices
+    help, -h, --help           Show this help"
 }
 
 # If the table is empty, delete the table.

@@ -3,20 +3,18 @@
 # shellcheck disable=SC3003
 
 . /lib/functions/gl_util.sh
-. /lib/functions/mptun.sh
+. /lib/functions/mptun.sh || exit 1
 
 [ -n "$(echo "${ifname}" | grep "^mptun")" ] || exit 0
+[ "$service_mode" = 'IPRB' ] || exit 0
+load_IPRB_config || exit 1
+[ "${IPRB_identity}" != "secondary" ] && return 0
 
 MPTUN_CONFIG="/etc/mptun/mpnet.json"
 
 LOCKFILE=/tmp/run/iprb_wg_event.lock
 
 mkdir -p /tmp/wireguard/"${ifname}"/peers
-service_mode="$(uci -q get mptun.global.service_mode)"
-#IPRB_disabled="$(uci -q get mptun.IPRB.disabled)"
-IPRB_identity="$(uci -q get mptun.IPRB.identity)"
-[ "${service_mode}" != "IPRB" ] && return 0
-#[ "${IPRB_identity}" != "secondary" ] && return 0
 WG_BIN='awg'
 
 IPRB_safe_pubkey() {
@@ -62,28 +60,41 @@ IPRB_update_p2p_status() {
 
     local default_pub="$(get_default_pub)"
     local current_pub="$(get_current_pub)"
-    local old_p2p_status="$(uci -q get mptun.IPRB.is_p2p)"
-    local current_p2p_status="${old_p2p_status}"
-
-    [ -z "${old_p2p_status}" ] && old_p2p_status='0'
+    local status="$(ubus -t 5 call gl-session call '{"module":"mptun","func":"get_IPRB_status","params":{}}' 2>/dev/null)"
+    local old_p2p_status="$(jsonfilter -s "$status" -e '@.result.status.data.is_p2p' 2>/dev/null)"
+    [ -z "$old_p2p_status" ] && old_p2p_status='false'
+    local current_p2p_status="$old_p2p_status"
 
     if [ -n "$default_pub" -a -n "$current_pub" -a "$default_pub" != "$current_pub" ] ;then
         if [ "$peerpubkey" = "$current_pub" ] ;then
             if [ "${ACTION}" = "KEYPAIR-CREATED" ] ;then
-                current_p2p_status='1'
+                current_p2p_status='true'
             else
-                current_p2p_status='0'
+                current_p2p_status='false'
             fi
         fi
     else
-        current_p2p_status='0'
+        current_p2p_status='false'
     fi
 
-    [ "${old_p2p_status}" != "${current_p2p_status}" ] && {
-        uci -q set mptun.IPRB.is_p2p="${current_p2p_status}"
-        uci commit mptun
-        notify_IPRB_status
+    [ "$old_p2p_status" != "$current_p2p_status" ] && {
+        IPRB_report_runtime "\"is_p2p\":${current_p2p_status}"
     }
+}
+
+# 字段由本脚本固定构造；失败只记录，不阻断 peer 清理或端口切换。
+IPRB_report_runtime() {
+    local changes="$1"
+    local response result err_code
+    [ -n "$changes" ] || return 0
+    response="$(ubus -t 5 call gl-session call \
+        "{\"module\":\"mptun\",\"func\":\"report_IPRB_runtime\",\"params\":{${changes}}}" 2>/dev/null)"
+    result="$(jsonfilter -s "$response" -e '@.result' 2>/dev/null)"
+    err_code="$(jsonfilter -s "$response" -e '@.result.err_code' 2>/dev/null)"
+    if [ -z "$result" ] || [ -n "$err_code" -a "$err_code" != '0' ]; then
+        logger -t mptun 'failed to report IPRB runtime'
+    fi
+    return 0
 }
 
 IPRB_has_remaining_remote_peer() {
@@ -138,14 +149,12 @@ if [ "${ACTION}" = "KEYPAIR-CREATED" -a -n "$(echo "${ifname}" | grep "^mptun")"
     # unlock
     rm -f $LOCKFILE
 
-    [ "${active_num}" -ne 0 -a "$(uci -q get mptun.IPRB.state)" = "connected" ] && return
+    status="$(ubus -t 5 call gl-session call '{"module":"mptun","func":"get_IPRB_status","params":{}}' 2>/dev/null)"
+    current_state="$(jsonfilter -s "$status" -e '@.result.status.data.state' 2>/dev/null)"
+    [ "${active_num}" -ne 0 -a "$current_state" = 'connected' ] && return
 
     con_time="$(date +%s)"
-    uci -q set mptun.IPRB.state="connected"
-    uci -q set mptun.IPRB.lastConnectedTime="$con_time"
-    uci commit mptun
-
-    notify_IPRB_status
+    IPRB_report_runtime "\"state\":\"connected\",\"lastConnectedTime\":\"${con_time}\""
 fi
 
 if [ "${ACTION}" = "REKEY-TIMEOUT"  -a -n "$(echo "${ifname}" | grep "^mptun")" ]; then
@@ -171,10 +180,7 @@ if [ "${ACTION}" = "REKEY-TIMEOUT"  -a -n "$(echo "${ifname}" | grep "^mptun")" 
         fi
     fi
 
-    uci -q set mptun.IPRB.state="connecting"
-    uci -q delete mptun.IPRB.lastConnectedTime
-    uci commit mptun
-    notify_IPRB_status
+    IPRB_report_runtime '"state":"connecting","lastConnectedTime":""'
 
     # Try switching ports to reconnect and avoid disconnections caused by network changes.
     $WG_BIN set "${ifname}" listen-port 0

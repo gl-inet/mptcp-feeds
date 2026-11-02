@@ -13,12 +13,24 @@ local http = require "resty.http"
 local M = {}
 
 local ERR_PARAMETER = 1
-local enable_extend_feature = false
+local SPEEDTEST_INTERFACE = "mptun0"
+local DEFAULT_SPEEDTEST_ENABLE = "1"
+local DEFAULT_SPEEDTEST_TYPE = "iperf"
+local DEFAULT_SPEEDTEST_PORT = 5201
+local SPEEDTEST_CLIENT_INFO_FILE = "/etc/mp_connection_info"
+local SPEEDTEST_CLIENT_UBUS_OBJECT = "mpifd.speedtest_client"
+local SPEEDTEST_CLIENT_WS_NAME = "mptun.speedtest_client_result"
+local SPEEDTEST_CLIENT_ERROR = "speedtest_failed"
+local MAX_SPEEDTEST_BITS_PER_SECOND = 1000 * 1000 * 1000 * 1000
 
 local req_path = {
     ["req_get_identity"] = "/sdwan/sdk-iprb/v1/my/network/simple",
     ["req_get_seconds_list"] = "/sdwan/sdk-iprb/v1/secondary/list",
-    ["req_get_access_code"] = "/sdwan/sdk-iprb/v1/device/access/dynamic-code",
+    ["req_add_access_code"] = "/sdwan/sdk-iprb/v1/device/access/dynamic-code/generate",
+    ["req_get_access_code_list"] = "/sdwan/sdk-iprb/v1/device/access/dynamic-code/list",
+    ["req_delete_access_code"] = "/sdwan/sdk-iprb/v1/device/access/dynamic-code",
+    ["req_set_access_code_alias"] = "/sdwan/sdk-iprb/v1/device/access/dynamic-code/clientAlias",
+    ["req_clear_invalid_access_code"] = "/sdwan/sdk-iprb/v1/device/access/dynamic-code/expired",
     ["req_get_bind_code"] = "/sdwan/sdk-iprb/v1/device/bind/dynamic-code",
     ["req_remove_second"] = "/sdwan/sdk-iprb/v1/device/client/remove",
     ["req_get_bind_info"] = "/sdwan/sdk-iprb/v1/bindInfo",
@@ -26,19 +38,17 @@ local req_path = {
     ["req_access_by_code"] = "/sdwan/sdk-iprb/v1/device/dynamic-code/access",
     ["req_second_rename"] = "/sdwan/sdk-iprb/v1/network/secondary/rename",
     ["req_use_exit"] = "/sdwan/sdk-iprb/v1/device/useInternetExit",
-    ["report_net_resource"] = "/sdwan/sdk-iprb/v1/device/exposeResource",
     ["req_get_pay_url"] = "/sdwan/sdk-iprb/v1/pay/url",
     ["req_reset"] = "/sdwan/sdk-iprb/v1/device/network/reset",
-    ["req_order_alerts"] = "/sdwan/sdk-iprb/v1/device/order/alerts",
-    ["req_order_pageList"] = "/sdwan/sdk-iprb/v1/device/order/pageList",
-    ["req_order_alerts_dismiss"] = "/sdwan/sdk-iprb/v1/device/order/alerts/dismiss",
-    ["req_order_alerts_mute"] = "/sdwan/sdk-iprb/v1/network/plan/alerts/mute",
-    ["req_order_refund_link"] = "/sdwan/sdk-iprb/v1/device/order/refund-link"
 }
 local valid_req_path = {
     [req_path["req_get_identity"]] = true,
     [req_path["req_get_seconds_list"]] = true,
-    [req_path["req_get_access_code"]] = true,
+    [req_path["req_add_access_code"]] = true,
+    [req_path["req_get_access_code_list"]] = true,
+    [req_path["req_delete_access_code"]] = true,
+    [req_path["req_set_access_code_alias"]] = true,
+    [req_path["req_clear_invalid_access_code"]] = true,
     [req_path["req_get_bind_code"]] = true,
     [req_path["req_remove_second"]] = true,
     [req_path["req_get_bind_info"]] = true,
@@ -46,14 +56,8 @@ local valid_req_path = {
     [req_path["req_access_by_code"]] = true,
     [req_path["req_second_rename"]] = true,
     [req_path["req_use_exit"]] = true,
-    [req_path["report_net_resource"]] = true,
     [req_path["req_get_pay_url"]] = true,
     [req_path["req_reset"]] = true,
-    [req_path["req_order_alerts"]] = true,
-    [req_path["req_order_pageList"]] = true,
-    [req_path["req_order_alerts_dismiss"]] = true,
-    [req_path["req_order_alerts_mute"]] = true,
-    [req_path["req_order_refund_link"]] = true
 }
 
 local valid_req_header = {
@@ -66,12 +70,18 @@ local valid_req_header_value = {
 
 local valid_req_method = {
     ["GET"] = true,
-    ["POST"] = true
+    ["POST"] = true,
+    ["PUT"] = true,
+    ["DELETE"] = true
 }
 
 local valid_query_and_body_params = {
-    ["dynamicCode"] = "^%w+$",
+    ["dynamicCode"] = "^[%w%_%-]+$",
+    ["accessCode"] = "^[%w%_%-]+$",
+    ["code"] = "^[%w%_%-]+$",
     ["networkId"] = "^%w+$",
+    ["clientAlias"] = "^[^%c]*$", -- 访问码别名与从站名称采用相同文本规则。
+    ["aliasName"] = "^[^%c]*$",   -- JSON 文本字段，允许中文和标点，不允许控制字符。
     ["sort"] = "^[%w%_%-%,]+$",
     ["gatewayIp"] = "^[%d%.]+$",
     ["interfaceName"] = "^[%w%_%-%.]+$",
@@ -81,74 +91,6 @@ local valid_query_and_body_params = {
     ["DEFAULT"] = "^[%w%_%-]+$"
 }
 
-local snoop_func = {}
-local pre_req_func = {}
-
-local creationChannel = {
-    ["AstroMesh"] = "001"
-}
-local PATH_AW_RUN_INFO = "/tmp/run/aw_tmp_dir"
-local PATH_AW_NOTICE_INFO = PATH_AW_RUN_INFO .. "/notice_info"
-local notice_type = {
-    "resource_net_conflict"
-}
-local network_event_type = {
-    [10] = { type = "new address", deal_func = nil }
-}
-
-local function set_network_event_deal_func(event_type, deal_func)
-    if type(event_type) ~= 'string' or event_type == '' or type(deal_func) ~= 'function' then
-        return false
-    end
-
-    for _, event in pairs(network_event_type) do
-        if type(event) == 'table' and event.type == event_type then
-            event.deal_func = deal_func
-            return true
-        end
-    end
-
-    return false
-end
-
-local function debug_event_to_file(msg)
-    local c = uci.cursor()
-    local need_debug = c:get("mptun", "global", "debug") == '1'
-    if not need_debug or type(msg) ~= 'string' then
-        return
-    end
-
-    local f_deb = io.open("/var/log/mptun_debug_log", "a")
-    if f_deb ~= nil then
-        f_deb:write(tostring(msg) .. '\n')
-        f_deb:close()
-    end
-end
-local function to_network_cidr(ip, mask)
-    if type(ip) ~= 'string' then
-        return nil
-    end
-    local a, b, c, d = ip:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
-    local p = tonumber(mask) or 32
-    if a == nil or p < 0 or p > 32 then
-        return nil
-    end
-
-    a, b, c, d = tonumber(a), tonumber(b), tonumber(c), tonumber(d)
-    if a > 255 or b > 255 or c > 255 or d > 255 then
-        return nil
-    end
-
-    local ip_u32 = a * 16777216 + b * 65536 + c * 256 + d
-    local block = 2 ^ (32 - p)
-    local net_u32 = math.floor(ip_u32 / block) * block
-    local na = math.floor(net_u32 / 16777216) % 256
-    local nb = math.floor(net_u32 / 65536) % 256
-    local nc = math.floor(net_u32 / 256) % 256
-    local nd = net_u32 % 256
-
-    return string.format("%d.%d.%d.%d/%d", na, nb, nc, nd, p)
-end
 local function is_valid_ipv4(ip)
     if type(ip) ~= 'string' then
         return false
@@ -169,6 +111,105 @@ local function is_valid_ipv4(ip)
     return true
 end
 
+local function is_valid_canonical_ipv4(ip)
+    if not is_valid_ipv4(ip) or #ip < 7 or #ip > 15 then
+        return false
+    end
+
+    for octet in ip:gmatch("[^.]+") do
+        if #octet > 3 or (#octet > 1 and octet:sub(1, 1) == "0") then
+            return false
+        end
+    end
+
+    return true
+end
+
+local function is_valid_positive_integer(value)
+    return type(value) == "number" and value == value and
+        value > 0 and value < math.huge and value == math.floor(value)
+end
+
+local function speedtest_client_service_unavailable()
+    return {
+        err_code = -3,
+        err_msg = "speedtest client service is unavailable"
+    }
+end
+
+local function normalize_speedtest_client_start_result(result)
+    -- An empty, nil or future successful response still means accepted. Do not
+    -- expose fields added by the local ubus service.
+    if type(result) ~= "table" or result.err_code == nil then
+        return {}
+    end
+
+    if result.err_code == -1 then
+        return {
+            err_code = -1,
+            err_msg = "invalid speedtest client target"
+        }
+    end
+
+    if result.err_code == -2 then
+        return {
+            err_code = -2,
+            err_msg = "speedtest client is running"
+        }
+    end
+
+    return speedtest_client_service_unavailable()
+end
+
+-- The backend owns the snapshot. Rebuild the public shape and preserve []
+-- across ubus, which can represent an empty Lua array as an empty object.
+local function speedtest_client_snapshot(notify)
+    local result, err = ubus.call(SPEEDTEST_CLIENT_UBUS_OBJECT, "status", {}, 500)
+    if err or type(result) ~= "table" then return nil end
+    if result.status ~= "pending" and result.status ~= "testing" and
+        result.status ~= "finished" then return nil end
+    if type(result.data) ~= "table" then return nil end
+
+    local data = setmetatable({}, cjson.array_mt)
+    local count = 0
+    for key in pairs(result.data) do
+        if not is_valid_positive_integer(key) then return nil end
+        count = count + 1
+    end
+    for i = 1, count do
+        local point = result.data[i]
+        if type(point) ~= "table" or point.second ~= i or
+            type(point.value) ~= "number" or point.value ~= point.value or
+            point.value < 0 or point.value > MAX_SPEEDTEST_BITS_PER_SECOND or
+            point.value ~= math.floor(point.value) then return nil end
+        data[i] = { second = i, value = point.value }
+    end
+    if result.status == "pending" and count ~= 0 then return nil end
+    local snapshot = { status = result.status, data = data }
+    if result.latency_ms ~= nil then
+        local latency = result.latency_ms
+        if result.status == "pending" or type(latency) ~= "number" or
+            latency ~= latency or latency < 0 or latency >= math.huge then return nil end
+        snapshot.latency_ms = latency
+    end
+    if result.status == "finished" then
+        if count == 0 or not is_valid_positive_integer(result.finished_at) then return nil end
+        snapshot.finished_at = result.finished_at
+    elseif notify and result.status == "pending" and result.error == SPEEDTEST_CLIENT_ERROR then
+        snapshot.error = SPEEDTEST_CLIENT_ERROR
+    end
+    return snapshot
+end
+
+-- Non-function exports are not registered as HTTP RPCs by oui.rpc.
+-- WebSocket subscription uses this internal reader; there is no public GET.
+M._speedtest_client = {
+    snapshot = function()
+        return speedtest_client_snapshot(false) or
+            { status = "pending", data = setmetatable({}, cjson.array_mt) }
+    end
+}
+
 local function is_valid_ipv4_cidr(network)
     if type(network) ~= 'string' then
         return false
@@ -187,65 +228,113 @@ local function is_valid_ipv4_cidr(network)
     return is_valid_ipv4(ip)
 end
 
-local function normalize_report_net_resource_node(item)
-    if type(item) ~= 'table' then
+local function speedtest_items(value)
+    return (value:gsub("，", ",")):gmatch("[^,%s]+")
+end
+
+local function get_speedtest_ip(c)
+    local profile = c:get("mptun", "config", "profile")
+    if type(profile) ~= "string" or profile == "" then
         return nil
     end
 
-    local node = {}
-    local has_allowed_key = false
-    local allowed_keys = {
-        gateway_ip = true,
-        interface_name = true,
-        network = true,
-        type = true,
-    }
-
-    for key, _ in pairs(item) do
-        if type(key) ~= 'string' or allowed_keys[key] ~= true then
-            return nil
-        end
-    end
-
-    if item.gateway_ip ~= nil then
-        if not is_valid_ipv4(item.gateway_ip) then
-            return nil
-        end
-        node.gatewayIp = item.gateway_ip
-        has_allowed_key = true
-    end
-
-    if item.interface_name ~= nil then
-        if type(item.interface_name) ~= 'string' or item.interface_name == '' or #item.interface_name > 64 or
-            string.match(item.interface_name, valid_query_and_body_params["interfaceName"]) ~= item.interface_name then
-            return nil
-        end
-        node.interfaceName = item.interface_name
-        has_allowed_key = true
-    end
-
-    if item.network ~= nil then
-        if not is_valid_ipv4_cidr(item.network) then
-            return nil
-        end
-        node.network = item.network
-        has_allowed_key = true
-    end
-
-    if item.type ~= nil then
-        if type(item.type) ~= 'string' or item.type == '' or #item.type > 32 or
-            string.match(item.type, valid_query_and_body_params["type"]) ~= item.type then
-            return nil
-        end
-        node.type = item.type
-        has_allowed_key = true
-    end
-
-    if has_allowed_key ~= true then
+    local data = utils.readfile(profile)
+    if type(data) ~= "string" or data == "" then
         return nil
     end
 
-    return node
+    local ok, config = pcall(cjson.decode, data)
+    if not ok or type(config) ~= "table" or
+        type(config.udpTun) ~= "table" or
+        type(config.udpTun.interface) ~= "table" then
+        return nil
+    end
+
+    local interface = config.udpTun.interface
+    local address = interface.address
+    local allowed_src = interface.allowedSrc
+    if type(address) ~= "string" or type(allowed_src) ~= "string" then
+        return nil
+    end
+
+    local has_source = false
+    for source in speedtest_items(allowed_src) do
+        if is_valid_ipv4(source) or is_valid_ipv4_cidr(source) then
+            has_source = true
+            break
+        end
+    end
+    if not has_source then
+        return nil
+    end
+
+    for item in speedtest_items(address) do
+        if is_valid_ipv4(item) then
+            return item
+        end
+
+        if is_valid_ipv4_cidr(item) then
+            return item:match("^([^/]+)/")
+        end
+    end
+
+    return nil
+end
+
+local function get_speedtest_options(c)
+    local enabled = c:get("mptun", "global", "enable_speedtest")
+    if enabled ~= "0" and enabled ~= "1" then
+        enabled = DEFAULT_SPEEDTEST_ENABLE
+    end
+
+    local activator_type = c:get("mptun", "global", "speedtest_type")
+    if activator_type ~= DEFAULT_SPEEDTEST_TYPE then
+        activator_type = DEFAULT_SPEEDTEST_TYPE
+    end
+
+    local port_value = c:get("mptun", "global", "speedtest_port")
+    local port
+    if type(port_value) == "string" and port_value:match("^%d+$") then
+        port = tonumber(port_value)
+    end
+    if not port or port < 1 or port > 65535 then
+        port = DEFAULT_SPEEDTEST_PORT
+    end
+
+    return enabled, activator_type, port
+end
+
+local function get_speedtest_client_target(c)
+    if c:get("mptun", "global", "service_mode") ~= "IPRB" or
+        c:get("mptun", "IPRB", "identity") ~= "secondary" or
+        c:get("mptun", "global", "enable") ~= "1" or
+        c:get("mptun", "global", "mptun") ~= SPEEDTEST_INTERFACE then
+        return nil
+    end
+
+    local enabled, _, port = get_speedtest_options(c)
+    if enabled ~= "1" or not fs.access("/sys/class/net/" .. SPEEDTEST_INTERFACE) then
+        return nil
+    end
+
+    local data = utils.readfile(SPEEDTEST_CLIENT_INFO_FILE)
+    if type(data) ~= "string" or data == "" then
+        return nil
+    end
+
+    local ok, info = pcall(cjson.decode, data)
+    if not ok or type(info) ~= "table" or type(info.connection) ~= "table" then
+        return nil
+    end
+
+    for _, connection in ipairs(info.connection) do
+        local target = type(connection) == "table" and connection.target or nil
+        if is_valid_canonical_ipv4(target) and target ~= "0.0.0.0" then
+            return target, port
+        end
+    end
+
+    return nil
 end
 local function vpn_is_tap_s2s()
     local rpc_ret = ubus.call("gl-session", "call", { module = "vpn-client", func = "get_status", params = {} })
@@ -289,18 +378,20 @@ local function check_req_header(k, v)
 end
 
 local function check_payload_header(key, value)
-    if not key or not value then
+    if key == nil then
         return true
     end
-    if not key then
+    if type(key) ~= 'string' then
+        return false
+    end
+    local clean_k = key:match("^%s*(.-)%s*$")
+    if string.match(clean_k, valid_query_and_body_params["DEFAULT"]) ~= clean_k then
         return false
     end
     if value and value ~= '' then
-        local clean_k = key:match("^%s*(.-)%s*$")
         local clean_v = value:match("^%s*(.-)%s*$")
         local pattern = valid_query_and_body_params[key] or valid_query_and_body_params["DEFAULT"]
-        return string.match(clean_k, valid_query_and_body_params["DEFAULT"]) == clean_k and
-            string.match(clean_v, pattern) == clean_v
+        return string.match(clean_v, pattern) == clean_v
     end
     return true
 end
@@ -316,6 +407,9 @@ local function check_params_valid(params, checkfunc)
             return checkfunc(key, value)
         elseif t == "table" then
             for k, v in pairs(value) do
+                if type(k) ~= 'number' and not checkfunc(k, nil) then
+                    return false
+                end
                 local real_k = k
                 if type(k) == 'number' then
                     real_k = key
@@ -336,42 +430,12 @@ local function check_params_valid(params, checkfunc)
     return check(nil, params)
 end
 
-local function set_service_mode(mode)
-    local c = uci.cursor()
-    if mode ~= nil and (mode == 'IPRB' or mode == 'classic') then
-        c:set("mptun", "global", "service_mode", tostring(mode))
-        c:commit("mptun")
-    else
-        return -1
-    end
-end
 local function notify_gl_cloud_module_detached()
     return ubus.call('gl-session', 'call', {
         module = 'cloud',
         func = 'notify_module_detached',
         params = { module = 'mptun' }
     })
-end
-local function set_IPRB_option(opt)
-    local c = uci.cursor()
-    if not opt then
-        return -1
-    end
-
-    c:set("mptun", "IPRB", "service_instance")
-    if type(opt) == 'table' then
-        for k, v in pairs(opt) do
-            if (type(v) == "string" or type(v) == "number") and tostring(v) ~= '' then
-                local old_v = c:get("mptun", "IPRB", tostring(k)) or " "
-                if tostring(old_v) ~= tostring(v) then
-                    c:set("mptun", "IPRB", tostring(k), tostring(v))
-                end
-            elseif type(v) == "table" then
-                c:set("mptun", "IPRB", tostring(k), v)
-            end
-        end
-    end
-    c:commit("mptun")
 end
 
 local function net_topology_is_exist()
@@ -596,6 +660,110 @@ end
 
 --[[
     @method-type: call
+    @method-name: get_speedtest_info_list
+    @method-desc: get the single speed-test endpoint owned by aw-s2s
+
+    @out array   endpoint Speed-test endpoint list; empty when no endpoint is available.
+    @out string  endpoint.interface Interface that owns the endpoint.
+    @out string  endpoint.ip_address IPv4 address of the endpoint.
+    @out string  endpoint.activator_type Speed-test activator type.
+    @out number  endpoint.port TCP port of the endpoint.
+
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","get_speedtest_info_list",{}]}
+    @out-example: {"jsonrpc":"2.0","id":1,"result":[{"interface":"mptun0","ip_address":"10.10.227.2","activator_type":"iperf","port":5201}]}
+
+    An empty result means that aw-s2s currently publishes no speed-test
+    configuration. This read-only method consumes no input parameters and does not
+    verify firewall, NFQUEUE, mpifd or iperf3 runtime state.
+--]]
+function M.get_speedtest_info_list()
+    local c = uci.cursor()
+
+    if c:get("mptun", "global", "service_mode") ~= "IPRB" or
+        c:get("mptun", "IPRB", "identity") ~= "primary" then
+        return {}
+    end
+
+    local enabled, activator_type, port = get_speedtest_options(c)
+    if enabled ~= "1" or c:get("mptun", "global", "enable") ~= "1" or
+        c:get("mptun", "global", "mptun") ~= SPEEDTEST_INTERFACE then
+        return {}
+    end
+
+    if not fs.access("/sys/class/net/" .. SPEEDTEST_INTERFACE) then
+        return {}
+    end
+
+    local ip = get_speedtest_ip(c)
+    if not ip then
+        return {}
+    end
+
+    return {{
+        interface = SPEEDTEST_INTERFACE,
+        ip_address = ip,
+        activator_type = activator_type,
+        port = port
+    }}
+end
+
+--[[
+    @method-type: call
+    @method-name: start_speedtest_client
+    @method-desc: start one asynchronous ping followed by an iperf3 upload test
+
+    @out number  ?err_code Error code when the request cannot be accepted.
+    @out string  ?err_msg Error message when the request cannot be accepted.
+
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","start_speedtest_client",{}]}
+    @out-example: {"jsonrpc":"2.0","id":1,"result":[]}
+--]]
+function M.start_speedtest_client()
+    local address, port = get_speedtest_client_target(uci.cursor())
+    if not address then
+        return {
+            err_code = -1,
+            err_msg = "speedtest client target is unavailable"
+        }
+    end
+
+    local result, err = ubus.call(SPEEDTEST_CLIENT_UBUS_OBJECT, "run", {
+        address = address,
+        port = port
+    })
+    if err ~= nil then
+        return speedtest_client_service_unavailable()
+    end
+
+    -- ngx-ubus-proxy may decode an empty successful ubus reply as nil or
+    -- cjson.null. The absence of an accompanying error still means that
+    -- mpifd accepted the request. Never expose the local ubus response table.
+    return normalize_speedtest_client_start_result(result)
+end
+
+--[[
+    @method-type: call
+    @method-name: push_speedtest_client_result_to_wb
+    @method-desc: read the backend snapshot and notify speed-test subscribers
+    @out string ?status Status successfully submitted to gl-session.notify.
+    @out number ?err_code Notification or snapshot failure.
+    @out string ?err_msg Failure description.
+    @in-example: {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","push_speedtest_client_result_to_wb",{}]}
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{"status":"testing"}}
+--]]
+function M.push_speedtest_client_result_to_wb()
+    local snapshot = speedtest_client_snapshot(true)
+    if not snapshot then return speedtest_client_service_unavailable() end
+    local _, err = ubus.call("gl-session", "notify", {
+        name = SPEEDTEST_CLIENT_WS_NAME, data = snapshot
+    }, 500)
+    if err then return { err_code = -3, err_msg = "speedtest notification failed" } end
+    -- The publisher uses the status actually sent, including completion that
+    -- occurred while this RPC was querying mpifd, to avoid a second final push.
+    return { status = snapshot.status }
+end
+--[[
+    @method-type: call
     @method-name: get_status
     @method-desc: get mptun network status
 
@@ -801,17 +969,6 @@ function M.get_token()
     return { token = res }
 end
 
-local function pre_do_request(req_path, params)
-    if pre_req_func[req_path] then
-        pre_req_func[req_path](params)
-    end
-end
-local function snoop_response(req_path, resp)
-    if snoop_func[req_path] then
-        snoop_func[req_path](resp)
-    end
-end
-
 local function __raw_request(params)
     local c = uci.cursor()
     local base_url = c:get("mptun", "global", "base_url") or 'https://goodpas-api.gl-inet.com'
@@ -850,12 +1007,12 @@ local function __raw_request(params)
         return { err_code = -2, err_msg = 'invalid params.' }
     end
 
-    pre_do_request(req_path, params)
     local timestamp = os.time() .. '000'
     local mac_file = io.open('/proc/gl-hw-info/device_mac', "r") or nil
-    local mac
+    local mac = ''
     if mac_file then
-        mac = mac_file:read("*a")
+        mac = mac_file:read("*a") or ''
+        mac_file:close()
     end
     mac = mac:match("^%s*(.-)%s*$")
     if mac ~= '' then
@@ -897,10 +1054,12 @@ local function __raw_request(params)
                             if type(per_k) ~= 'number' then
                                 return { err_code = -6, err_msg = 'method GET invalid param array.' }
                             end
-                            append_url = string.format('%s&%s=%s', append_url, tostring(k), tostring(per_v))
+                            append_url = string.format('%s&%s=%s', append_url,
+                                ngx.escape_uri(tostring(k)), ngx.escape_uri(tostring(per_v)))
                         end
                     else
-                        append_url = string.format('%s&%s=%s', append_url, tostring(k), tostring(v))
+                        append_url = string.format('%s&%s=%s', append_url,
+                            ngx.escape_uri(tostring(k)), ngx.escape_uri(tostring(v)))
                     end
                 end
             end
@@ -909,7 +1068,7 @@ local function __raw_request(params)
             url = string.format('%s?%s', url, append_url)
         end
         opt.method = "GET"
-    elseif req_method == 'POST' then
+    else
         -- set custom body
         local body = {}
         if type(req_body) == 'table' then
@@ -919,8 +1078,12 @@ local function __raw_request(params)
                 end
             end
         end
-        opt.method = "POST"
-        opt.body = cjson.encode(body)
+        opt.method = req_method
+        -- DELETE without fields has no body; POST/PUT retain JSON object bodies.
+        if req_method ~= 'DELETE' or next(body) ~= nil then
+            -- oui-rpc 将空 table 默认编码为 []；云端请求体在这里明确保持对象。
+            opt.body = next(body) == nil and '{}' or cjson.encode(body)
+        end
     end
 
     local httpc = http.new()
@@ -949,13 +1112,9 @@ local function __raw_request(params)
     if err ~= nil then
         return { err_code = -4, err_msg = tostring(err) }
     end
-    if resp == nil or not resp.status == nil or not resp.body == nil then
-        return { err_code = -5, err_msg = tostring(err) }
+    if resp == nil or resp.status == nil or resp.body == nil then
+        return { err_code = -5, err_msg = 'invalid HTTP response' }
     end
-    if resp.status == 200 then
-        snoop_response(req_path, resp)
-    end
-
     return { err_code = 0, status_code = resp.status, body = resp.body }
 end
 
@@ -979,37 +1138,546 @@ function M.raw_request(raw_params)
     end
 end
 
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function get_info_from_cloud()
-    local opt = {
-        ["req_method"] = "POST",
-        ["req_path"] = req_path["req_get_identity"]
-    }
-    return __raw_request(opt)
+-- 后台状态入口：公开查询和通知复用此结果，不通过查询触发云端同步。
+local function iprb_backend_call(method, timeout, params)
+    -- oui.ubus yields through nginx sockets: do not wrap this in Lua 5.1 pcall.
+    local result, err = ubus.call('mpifd.iprb', method, params or {}, timeout)
+    if err ~= nil or type(result) ~= 'table' then
+        return { err_code = -1, err_msg = 'iprb_backend_unavailable' }
+    end
+    return result
 end
 
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function IPRB_is_enabled()
-    local c = uci.cursor()
-    local service_mode = c:get("mptun", "global", "service_mode") or ''
-    if service_mode == '' then
-        get_info_from_cloud()
-        c:load("mptun")
-        service_mode = c:get("mptun", "global", "service_mode") or ''
+-- 基础查询只透传 mpifd 状态，查询失败时返回空表。
+local function __get_status()
+    local result = iprb_backend_call('status')
+    if result.err_code then return {} end
+    return result
+end
+
+-- 整理 IPRB 对外结构，供 RPC、WebSocket 和通知复用。
+local function __get_IPRB_status()
+    local result = __get_status()
+    if type(result.status) ~= 'table' then return {} end
+    -- ubus 可能省略空表，恢复主站/未初始化状态的 data 对象。
+    local status = result.status
+    if status.identity == 'secondary' and type(status.data) ~= 'table' then return {} end
+    if status.identity ~= 'secondary' then
+        status.data = {}
+    elseif status.enabled ~= '1' then
+        status.data.state = 'disconnected'
+    elseif status.data.state ~= 'connected' then
+        -- 仅映射本次对外返回，不改变后台运行状态。
+        status.data.state = 'connecting'
     end
-    local disabled = c:get("mptun", "IPRB", "disabled") or '0'
-    local identity = c:get("mptun", "IPRB", "identity") or ''
-    if disabled == '1' or service_mode ~= "IPRB" then
-        return false
-    else
-        if identity == 'primary' or identity == 'secondary' then
-            return true
-        else
-            return false
+    return { status = status }
+end
+
+local function is_finite_number(value)
+    return type(value) == 'number' and value == value and value > -math.huge and value < math.huge
+end
+
+--[[
+    @method-type: call
+    @method-name: IPRB_get_secondary_list
+    @method-desc: Query secondary devices and return available fields in camelCase.
+    @out array result Secondary devices; an empty list is returned as [].
+    @in-example: {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","IPRB_get_secondary_list",{}]}
+--]]
+function M.IPRB_get_secondary_list()
+    -- 1. 无业务入参；请求方法、路径和请求体由接口固定。
+    local request = {
+        req_method = 'POST',
+        req_path = req_path.req_get_seconds_list,
+        req_body = {}
+    }
+
+    -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
+    local response = __raw_request(request)
+    if type(response) ~= 'table' or response.err_code ~= 0 then
+        return { err_code = -1, err_msg = 'cloud_request_failed' }
+    end
+    if response.status_code ~= 200 then
+        return { err_code = -7, err_msg = 'cloud_http_failed' }
+    end
+    if type(response.body) ~= 'string' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+
+    -- 3. 解析响应外层；使用独立解码器，保留数组类型且不改变全局设置。
+    local json = cjson.new()
+    json.decode_array_with_array_mt(true)
+    json.decode_invalid_numbers(false)
+    local ok, body = pcall(json.decode, response.body)
+    if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
+        not is_finite_number(body.code) then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if body.code ~= 0 then
+        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+    end
+    local info = body.info
+    if type(info) ~= 'table' or getmetatable(info) ~= cjson.array_mt then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+
+    -- 4. 逐条重建公开字段；优先使用有效的驼峰字段，再兼容下划线命名。
+    local string_fields = {
+        name = 'name',
+        secondaryId = 'secondary_id',
+        secondaryType = 'secondary_type',
+        clientType = 'clientType',
+        connectStatus = 'connect_status',
+        channelIp = 'channel_ip',
+        model = 'model',
+        version = 'version'
+    }
+    local result = setmetatable({}, cjson.array_mt)
+    for _, entry in ipairs(info) do
+        if type(entry) == 'table' and getmetatable(entry) ~= cjson.array_mt then
+            local device = {}
+            for field, source in pairs(string_fields) do
+                local value = entry[field]
+                if type(value) ~= 'string' then value = entry[source] end
+                if type(value) == 'string' then device[field] = value end
+            end
+            local timestamp = entry.latestAccessTime
+            if not is_finite_number(timestamp) then timestamp = entry.latest_access_time end
+            if is_finite_number(timestamp) then device.latestAccessTime = timestamp end
+
+            -- 异常字段仅省略，不丢弃其他有效信息；无有效字段的条目跳过。
+            if next(device) ~= nil then result[#result + 1] = device end
         end
     end
+
+    -- 5. RPC 层编码新数组；即使没有可用条目，也保持 []。
+    return result
 end
 
+--[[
+    @method-type: call
+    @method-name: IPRB_req_secondary_rename
+    @method-desc: Rename a secondary device in the cloud.
+    @in string secondaryId Device identifier returned by the secondary list.
+    @in string aliasName New device name.
+    @out number ?err_code Error Code
+    @out string ?err_msg Error Message
+    @in-example: {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","IPRB_req_secondary_rename",{"secondaryId":"9483c42c8d90","aliasName":"sub2"}]}
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
+--]]
+function M.IPRB_req_secondary_rename(params)
+    -- 1. 校验入参；目标 ID 不允许为空，名称按原文提交，不做隐式转换。
+    if type(params) ~= 'table' or type(params.secondaryId) ~= 'string' or
+        not params.secondaryId:match('^[%w_%-]+$') or type(params.aliasName) ~= 'string' or
+        params.aliasName:find('%c') then
+        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+    end
+    local request = {
+        req_method = 'POST',
+        req_path = req_path.req_second_rename,
+        req_body = { secondaryId = params.secondaryId, aliasName = params.aliasName }
+    }
+
+    -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
+    local response = __raw_request(request)
+    if type(response) ~= 'table' or response.err_code ~= 0 then
+        return { err_code = -1, err_msg = 'cloud_request_failed' }
+    end
+    if response.status_code ~= 200 then
+        return { err_code = -7, err_msg = 'cloud_http_failed' }
+    end
+    if type(response.body) ~= 'string' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+
+    -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
+    local json = cjson.new()
+    json.decode_array_with_array_mt(true)
+    json.decode_invalid_numbers(false)
+    local ok, body = pcall(json.decode, response.body)
+    if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
+        not is_finite_number(body.code) then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if body.code ~= 0 then
+        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+    end
+
+    -- 4. 设置接口必须明确成功；缺失、null、字符串和数字都不能代替布尔结果。
+    local info = body.info
+    if type(info) ~= 'boolean' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if not info then
+        return { err_code = -9, err_msg = 'secondary_rename_failed' }
+    end
+
+    -- 5. 不修改本地状态；调用方可重新查询从站列表获取新名称。
+    return {}
+end
+
+--[[
+    @method-type: call
+    @method-name: IPRB_req_remove_secondary
+    @method-desc: Remove a secondary device in the cloud.
+    @in string secondaryId Device identifier returned by the secondary list.
+    @in string secondaryType Device type returned by the secondary list.
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
+--]]
+function M.IPRB_req_remove_secondary(params)
+    -- 1. 使用列表返回的目标标识和类型，只提交这两个字段。
+    if type(params) ~= 'table' or type(params.secondaryId) ~= 'string' or
+        not params.secondaryId:match('^[%w_%-]+$') or type(params.secondaryType) ~= 'string' or
+        not params.secondaryType:match('^[%w_%-]+$') then
+        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+    end
+    local request = {
+        req_method = 'POST',
+        req_path = req_path.req_remove_second,
+        req_body = { secondaryId = params.secondaryId, secondaryType = params.secondaryType }
+    }
+
+    -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
+    local response = __raw_request(request)
+    if type(response) ~= 'table' or response.err_code ~= 0 then
+        return { err_code = -1, err_msg = 'cloud_request_failed' }
+    end
+    if response.status_code ~= 200 then
+        return { err_code = -7, err_msg = 'cloud_http_failed' }
+    end
+    if type(response.body) ~= 'string' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+
+    -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
+    local json = cjson.new()
+    json.decode_array_with_array_mt(true)
+    json.decode_invalid_numbers(false)
+    local ok, body = pcall(json.decode, response.body)
+    if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
+        not is_finite_number(body.code) then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if body.code ~= 0 then
+        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+    end
+
+    -- 4. 设置接口必须收到布尔 true，不能把缺失或异常结果当作成功。
+    local info = body.info
+    if type(info) ~= 'boolean' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if not info then
+        return { err_code = -9, err_msg = 'secondary_remove_failed' }
+    end
+
+    -- 5. 只返回公开结果，不更新本机状态。
+    return {}
+end
+
+--[[
+    @method-type: call
+    @method-name: IPRB_get_access_code_list
+    @method-desc: query active and expired access codes from the cloud
+    @out array activeAccessCodes Active access codes with dynamicCode, expirationRemainder (seconds), clientAlias.
+    @out array expiredAccessCodes Expired access codes with dynamicCode and clientAlias.
+--]]
+function M.IPRB_get_access_code_list()
+    -- 1. 无业务入参；请求方法和路径由接口固定。
+    local request = {
+        req_method = 'GET',
+        req_path = req_path.req_get_access_code_list,
+        req_body = {}
+    }
+
+    -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
+    local response = __raw_request(request)
+    if type(response) ~= 'table' or response.err_code ~= 0 then
+        return { err_code = -1, err_msg = 'cloud_request_failed' }
+    end
+    if response.status_code ~= 200 then
+        return { err_code = -7, err_msg = 'cloud_http_failed' }
+    end
+    if type(response.body) ~= 'string' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+
+    -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
+    local json = cjson.new()
+    json.decode_array_with_array_mt(true)
+    json.decode_invalid_numbers(false)
+    local ok, body = pcall(json.decode, response.body)
+    if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
+        not is_finite_number(body.code) then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if body.code ~= 0 then
+        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+    end
+
+    -- 4. 两组列表必须有效；逐条重建公开字段，兼容下划线命名。
+    local info = body.info
+    if type(info) ~= 'table' or getmetatable(info) == cjson.array_mt then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    local result = {}
+    local groups = { activeAccessCodes = 'active_access_codes', expiredAccessCodes = 'expired_access_codes' }
+    for field, source in pairs(groups) do
+        local list = info[field]
+        if type(list) ~= 'table' or getmetatable(list) ~= cjson.array_mt then list = info[source] end
+        if type(list) ~= 'table' or getmetatable(list) ~= cjson.array_mt then
+            return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        end
+        local entries = setmetatable({}, cjson.array_mt)
+        for _, entry in ipairs(list) do
+            if type(entry) == 'table' and getmetatable(entry) ~= cjson.array_mt then
+                local item = {}
+                local code = entry.dynamicCode
+                if type(code) ~= 'string' then code = entry.dynamic_code end
+                if type(code) == 'string' then item.dynamicCode = code end
+                local alias = entry.clientAlias
+                if type(alias) ~= 'string' then alias = entry.client_alias end
+                if type(alias) == 'string' then item.clientAlias = alias end
+                if field == 'activeAccessCodes' then
+                    local duration = entry.expirationRemainder
+                    if not is_finite_number(duration) then duration = entry.expiration_remainder end
+                    if is_finite_number(duration) then item.expirationRemainder = duration end
+                end
+                -- 坏字段省略，其他有效字段继续交付；无可用字段的条目跳过。
+                if next(item) ~= nil then entries[#entries + 1] = item end
+            end
+        end
+        result[field] = entries
+    end
+
+    -- 5. 两组列表始终编码为数组；不透传云端额外字段。
+    return result
+end
+
+--[[
+    @method-type: call
+    @method-name: IPRB_add_access_code
+    @method-desc: create a new access code in the cloud
+    @out string dynamicCode New access code.
+    @out number expirationRemainder Validity duration in seconds.
+--]]
+function M.IPRB_add_access_code()
+    -- 1. 无业务入参；请求方法和路径由接口固定。
+    local request = {
+        req_method = 'POST',
+        req_path = req_path.req_add_access_code,
+        req_body = {}
+    }
+
+    -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
+    local response = __raw_request(request)
+    if type(response) ~= 'table' or response.err_code ~= 0 then
+        return { err_code = -1, err_msg = 'cloud_request_failed' }
+    end
+    if response.status_code ~= 200 then
+        return { err_code = -7, err_msg = 'cloud_http_failed' }
+    end
+    if type(response.body) ~= 'string' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+
+    -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
+    local json = cjson.new()
+    json.decode_array_with_array_mt(true)
+    json.decode_invalid_numbers(false)
+    local ok, body = pcall(json.decode, response.body)
+    if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
+        not is_finite_number(body.code) then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if body.code ~= 0 then
+        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+    end
+
+    -- 4. 新增操作必须取得有效访问码及有效期，不返回残缺的成功结果。
+    local info = body.info
+    if type(info) ~= 'table' or getmetatable(info) == cjson.array_mt then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    local code = info.dynamicCode
+    if type(code) ~= 'string' or not code:match('^[%w_%-]+$') then code = info.dynamic_code end
+    local duration = info.expirationRemainder
+    if not is_finite_number(duration) then duration = info.expiration_remainder end
+    if type(code) ~= 'string' or not code:match('^[%w_%-]+$') or not is_finite_number(duration) then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+
+    -- 5. 仅重建公开字段，有效期保持云端秒数，不做转换或补默认值。
+    return { dynamicCode = code, expirationRemainder = duration }
+end
+
+--[[
+    @method-type: call
+    @method-name: IPRB_set_access_code_alias
+    @method-desc: set the alias of an access code in the cloud
+    @in string dynamicCode Access code.
+    @in string alias Alias to set.
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
+--]]
+function M.IPRB_set_access_code_alias(params)
+    -- 1. 访问码非空；别名按 JSON 原文提交，空字符串表示清除。
+    if type(params) ~= 'table' or type(params.dynamicCode) ~= 'string' or
+        not params.dynamicCode:match('^[%w_%-]+$') or type(params.alias) ~= 'string' or
+        params.alias:find('%c') then
+        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+    end
+    local request = {
+        req_method = 'PUT',
+        req_path = req_path.req_set_access_code_alias,
+        req_body = { accessCode = params.dynamicCode, clientAlias = params.alias }
+    }
+
+    -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
+    local response = __raw_request(request)
+    if type(response) ~= 'table' or response.err_code ~= 0 then
+        return { err_code = -1, err_msg = 'cloud_request_failed' }
+    end
+    if response.status_code ~= 200 then
+        return { err_code = -7, err_msg = 'cloud_http_failed' }
+    end
+    if type(response.body) ~= 'string' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+
+    -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
+    local json = cjson.new()
+    json.decode_array_with_array_mt(true)
+    json.decode_invalid_numbers(false)
+    local ok, body = pcall(json.decode, response.body)
+    if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
+        not is_finite_number(body.code) then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if body.code ~= 0 then
+        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+    end
+
+    -- 4. 设置接口必须收到布尔 true，不能把缺失或异常结果当作成功。
+    local info = body.info
+    if type(info) ~= 'boolean' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if not info then
+        return { err_code = -9, err_msg = 'access_code_alias_failed' }
+    end
+
+    -- 5. 只返回公开结果，不更新本机状态。
+    return {}
+end
+
+--[[
+    @method-type: call
+    @method-name: IPRB_delete_access_code
+    @method-desc: delete an access code in the cloud
+    @in string dynamicCode Access code.
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
+--]]
+function M.IPRB_delete_access_code(params)
+    -- 1. 校验目标访问码，只提交云端要求的 code 字段。
+    if type(params) ~= 'table' or type(params.dynamicCode) ~= 'string' or
+        not params.dynamicCode:match('^[%w_%-]+$') then
+        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+    end
+    local request = {
+        req_method = 'DELETE',
+        req_path = req_path.req_delete_access_code,
+        req_body = { code = params.dynamicCode }
+    }
+
+    -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
+    local response = __raw_request(request)
+    if type(response) ~= 'table' or response.err_code ~= 0 then
+        return { err_code = -1, err_msg = 'cloud_request_failed' }
+    end
+    if response.status_code ~= 200 then
+        return { err_code = -7, err_msg = 'cloud_http_failed' }
+    end
+    if type(response.body) ~= 'string' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+
+    -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
+    local json = cjson.new()
+    json.decode_array_with_array_mt(true)
+    json.decode_invalid_numbers(false)
+    local ok, body = pcall(json.decode, response.body)
+    if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
+        not is_finite_number(body.code) then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if body.code ~= 0 then
+        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+    end
+
+    -- 4. 设置接口必须收到布尔 true，不能把缺失或异常结果当作成功。
+    local info = body.info
+    if type(info) ~= 'boolean' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if not info then
+        return { err_code = -9, err_msg = 'access_code_delete_failed' }
+    end
+
+    -- 5. 只返回公开结果，不更新本机状态。
+    return {}
+end
+
+--[[
+    @method-type: call
+    @method-name: IPRB_clear_invalid_access_code
+    @method-desc: ask the cloud to delete expired access codes
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
+--]]
+function M.IPRB_clear_invalid_access_code()
+    -- 1. 无业务入参；请求方法和路径由接口固定。
+    local request = {
+        req_method = 'DELETE',
+        req_path = req_path.req_clear_invalid_access_code,
+        req_body = {}
+    }
+
+    -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
+    local response = __raw_request(request)
+    if type(response) ~= 'table' or response.err_code ~= 0 then
+        return { err_code = -1, err_msg = 'cloud_request_failed' }
+    end
+    if response.status_code ~= 200 then
+        return { err_code = -7, err_msg = 'cloud_http_failed' }
+    end
+    if type(response.body) ~= 'string' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+
+    -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
+    local json = cjson.new()
+    json.decode_array_with_array_mt(true)
+    json.decode_invalid_numbers(false)
+    local ok, body = pcall(json.decode, response.body)
+    if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
+        not is_finite_number(body.code) then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if body.code ~= 0 then
+        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+    end
+
+    -- 4. 设置接口必须收到布尔 true，不能把缺失或异常结果当作成功。
+    local info = body.info
+    if type(info) ~= 'boolean' then
+        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+    end
+    if not info then
+        return { err_code = -9, err_msg = 'access_code_clear_failed' }
+    end
+
+    -- 5. 只返回公开结果，不更新本机状态。
+    return {}
+end
 --[[
     @method-type: call
     @method-name: is_IPRB_actual_running
@@ -1019,67 +1687,24 @@ end
     @out-example: {"jsonrpc":"2.0","id":1,"result":{"running":true}}
 --]]
 function M.is_IPRB_actual_running()
-    if not IPRB_is_enabled() then
+    -- 启用状态由后台维护；查询失败或未启用时不再尝试云端同步。
+    local result = __get_status()
+    if result.err_code or result.mode ~= 'IPRB' or type(result.status) ~= 'table' or
+        result.status.enabled ~= '1' then
         return { running = false }
     end
 
     return { running = is_mptun_running() }
 end
 
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function __get_IPRB_status(params)
-    local status = {}
-
-    if IPRB_is_enabled() == true then
-        status.enabled = '1'
-    else
-        status.enabled = '0'
-    end
-
-    local c = uci.cursor()
-    local identity = c:get("mptun", "IPRB", "identity") or ''
-    status.identity = identity
-    status.lastConnectedTime = c:get("mptun", "IPRB", "lastConnectedTime") or ''
-
-    status.be_kicked_out = c:get("mptun", "IPRB", "be_kicked_out") or '0'
-    status.is_p2p = c:get("mptun", "IPRB", "is_p2p") or '0'
-    local state = c:get("mptun", "IPRB", "state") or 'connecting'
-    if state ~= 'connected' then
-        state = "connecting"
-    end
-    status.state = state
-    if identity == "primary" or identity == "secondary" then
-        status.attempt_to_be = identity
-    else
-        status.attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
-    end
-    status.use_exit = c:get("mptun", "IPRB", "use_exit") or '1'
-    return { status = status }
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function check_AW_has_right_identity(identity)
-    local state = __get_IPRB_status()
-    local backend_identity = state.status.identity or ''
-    local c = uci.cursor()
-    local service_mode = c:get("mptun", "global", "service_mode") or ''
-
-    if service_mode == 'IPRB' then
-        if (identity == 'primary' and backend_identity == 'primary') or
-            (identity == 'secondary' and backend_identity == 'secondary') then
-            return true
-        end
-    end
-
-    return false
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
+-- 查询与推送读取相同后台快照，不触发云端请求或配置写入。
 local function push_status_to_wb()
     local status = __get_IPRB_status()
-    ubus.call('gl-session', 'notify', { name = "mptun.IPRB_status", data = status })
+    if next(status) == nil then return {} end
+    local _, err = ubus.call('gl-session', 'notify', { name = "mptun.IPRB_status", data = status })
+    if err then return { err_code = -1, err_msg = 'notify_failed' } end
+    return {}
 end
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 --[[
     @method-type: call
     @method-name: push_IPRB_status_to_wb
@@ -1088,790 +1713,199 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": { }}
 --]]
 function M.push_IPRB_status_to_wb(params)
-    push_status_to_wb()
-    return {}
+    return push_status_to_wb()
 end
 
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: get_IPRB_status
-    @method-desc: Obtain IPRB mode related status information.
-    @out string     status.enabled                  enabled or not
-    @out string     status.identity                 identity: primary or secondary or null
-    @out string     status.state                    state: connecting or connected
-    @out string     status.attempt_to_be            primary or secondary or null. The role temporarily selected by the user on the initial page, will be replaced by the identity field after the actual role is confirmed.
-    @out string     status.be_kicked_out            for secondary, be kicked out or not
-    @out string     status.is_p2p                   Indicates whether a p2p connection has been established.
-    @out string     status.lastConnectedTime        Timestamp of the last successful tunnel establishment.
-    @out number     ?err_code   Error Code
-    @out string     ?err_msg    Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_IPRB_status",{}]}
-    @out-example: {"id":15,"jsonrpc":"2.0","result":{"status":{"lastConnectedTime":"1769678361","is_p2p":"0","be_kicked_out":"0","attempt_to_be":"secondary","state":"connected","identity":"secondary","enabled":"1"}}}
---]]
-function M.get_IPRB_status(params)
-    local ret = __get_IPRB_status()
-    return ret
+-- RPC、WebSocket 和主动通知使用相同的状态结构。
+function M.get_IPRB_status()
+    return __get_IPRB_status()
 end
 
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: get_AW_status
-    @method-desc: Get partial local status information of the current AW service.
-    @out bool       enabled                 Is the AW function actually enabled or not
-    @out string     mode                    Current mode: IPRB or classic
-    @out object     status                  State information of each mode
-    @out bool       ?status.enable          Only available when mode is classic.
-    @out number     ?err_code   Error Code
-    @out string     ?err_msg    Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_AW_status",{}]}
-    @out-example: {"id":15,"jsonrpc":"2.0","result":{"enabled":true,"mode":"IPRB","status":{"lastConnectedTime":"1769681084","is_p2p":"0","be_kicked_out":"0","attempt_to_be":"secondary","state":"connected","identity":"secondary","enabled":"1"}}}
---]]
-function M.get_AW_status(params)
-    local IPRB_status = __get_IPRB_status()
-    local c = uci.cursor()
-    local current_mode = c:get("mptun", "global", "service_mode")
-    local global_enabled = c:get("mptun", "global", "enable") == '1'
-    local ret = {}
-    if current_mode == 'IPRB' then
-        ret.enabled = (IPRB_status.status.enabled == '1' and global_enabled == true)
-        ret.mode = current_mode
-        ret.status = IPRB_status.status
-    elseif current_mode == 'classic' then
-        ret.enabled = global_enabled
-        ret.mode = 'classic'
-        ret.status = { enable = global_enabled }
-    else
-        ret.enabled = false
-        ret.mode = ''
-        ret.status = {}
+-- 本地配置查询，供功能冲突检查和身份识别使用，不依赖 mpifd 或云端。
+-- 连接运行时仍通过 get_IPRB_status 查询。
+function M.get_AW_status()
+    local result = { enabled = false, mode = '', status = {} }
+    local ok, c = pcall(uci.cursor)
+    if not ok or not c then return result end
+
+    -- UCI 不会 yield；逐字段保护，避免后续读取失败丢掉已知状态。
+    local mode_ok, mode = pcall(c.get, c, 'mptun', 'global', 'service_mode')
+    if not mode_ok then mode = '' end
+    if mode == 'classic' then
+        local enable_ok, enable = pcall(c.get, c, 'mptun', 'global', 'enable')
+        local global_enabled = enable_ok and enable == '1'
+        result = { enabled = global_enabled, mode = 'classic', status = { enable = global_enabled } }
+    elseif mode == 'IPRB' then
+        local identity_ok, identity = pcall(c.get, c, 'mptun', 'IPRB', 'identity')
+        if not identity_ok or (identity ~= 'primary' and identity ~= 'secondary') then identity = '' end
+        local disabled_ok, disabled = pcall(c.get, c, 'mptun', 'IPRB', 'disabled')
+        -- 缺省 disabled 仍表示启用，读取异常则不能判为启用。
+        local enabled = identity ~= '' and disabled_ok and
+            (disabled == nil or type(disabled) == 'string') and disabled ~= '1'
+        local network_ok, network_id = pcall(c.get, c, 'mptun', 'IPRB', 'net_id')
+        if not network_ok or type(network_id) ~= 'string' then network_id = '' end
+        result = {
+            enabled = enabled,
+            mode = 'IPRB',
+            status = {
+                enabled = enabled and '1' or '0',
+                identity = identity,
+                network_id = network_id,
+                data = {}
+            }
+        }
     end
-    return ret
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: AW_get_global_summary
-    @method-desc: Get the current AW mode and enable state.
-    @out bool       enabled                 Whether the current AW mode is enabled
-    @out string     mode                    Current AW mode: classic or IPRB; empty if no valid mode is available
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "AW_get_global_summary",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {"enabled":true,"mode":"IPRB"}}
---]]
-function M.AW_get_global_summary(params)
-    local ret = M.get_AW_status()
-    local result = {
-        enabled = false,
-        mode = ''
-    }
-    if type(ret) == 'table' and type(ret.mode) == "string" and ret.mode ~= '' then
-        if ret.mode == 'classic' or ret.mode == 'IPRB' then
-            result.enabled = ret.enabled
-            result.mode = ret.mode
-        end
-    else
-        local c = uci.cursor()
-        local attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
-        if attempt_to_be == 'primary' or attempt_to_be == 'secondary' then
-            result.mode = 'IPRB'
-        end
-    end
+    pcall(c.close, c)
     return result
+end
+
+-- 摘要复用本地配置查询，不依赖 mpifd 或云端。
+function M.AW_get_global_summary()
+    -- 本地 UCI 查询不会 yield；异常或无效返回不影响其他字段的获取。
+    local ok, result = pcall(M.get_AW_status)
+    if not ok or type(result) ~= 'table' then result = {} end
+    local mode = result.mode
+    if mode ~= 'IPRB' and mode ~= 'classic' then mode = '' end
+    local identity = result.mode == 'IPRB' and type(result.status) == 'table' and result.status.identity
+    if result.err_code or (identity ~= 'primary' and identity ~= 'secondary') then
+        -- mptun_tools.sh 安装为 /usr/bin/mptun_tools；失败不影响模式和启用状态。
+        identity = ''
+        -- 命令代理会 yield，直接处理其失败返回，不套 Lua 5.1 pcall。
+        if ngx and ngx.pipe and type(ngx.pipe.spawn) == 'function' then
+            local process = ngx.pipe.spawn({ '/usr/bin/mptun_tools', 'get_IPRB_identity' },
+                { stdout_read_timeout = 5000 })
+            if process then
+                -- 固件代理读取后关闭 socket；wait 仅返回相同缓存，无需调用。
+                local output, err = process:stdout_read_all()
+                if not err and type(output) == 'string' then
+                    local value = output:match('^%s*(.-)%s*$')
+                    if value == 'primary' or value == 'secondary' then identity = value end
+                end
+            end
+        end
+    end
+    return { enabled = result.enabled == true, mode = mode, IPRB_model_sidentity = identity }
 end
 
 local function __push_global_summary_to_wb()
     local result = M.AW_get_global_summary()
-    ubus.call('gl-session', 'notify', { name = "mptun.AW_global_summary", data = result })
-end
-
---[[
-    @method-type: call
-    @method-name: push_global_summary_to_wb
-    @method-desc: push AW global summary to websocket.
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "push_global_summary_to_wb",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": { }}
---]]
-function M.push_global_summary_to_wb(params)
-    __push_global_summary_to_wb()
-    return {}
-end
-local function __AW_get_notice_msg()
-    local function get_notice_info_from_file()
-        local notice_msg_list = {}
-        local notice_msg_dir = PATH_AW_NOTICE_INFO
-        local notice_type_list = notice_type
-
-        if type(notice_msg_dir) ~= 'string' or notice_msg_dir == '' then
-            return notice_msg_list
-        end
-
-        if type(notice_type_list) ~= 'table' then
-            return notice_msg_list
-        end
-
-        -- Ensure notice_msg_dir is an existing directory before reading files in it.
-        if not fs.access(string.format('%s/.', notice_msg_dir)) then
-            return notice_msg_list
-        end
-
-        for _, msg_type in ipairs(notice_type_list) do
-            if type(msg_type) == 'string' and msg_type ~= '' then
-                local msg_file = string.format('%s/%s', notice_msg_dir, msg_type)
-                local raw = utils.readfile(msg_file)
-                if type(raw) == 'string' and raw ~= '' then
-                    local ok, data = pcall(cjson.decode, raw)
-                    if ok and type(data) == 'table' then
-                        table.insert(notice_msg_list, {
-                            msg_type = msg_type,
-                            data = data
-                        })
-                    end
-                end
-            end
-        end
-
-        return notice_msg_list
-    end
-
-    local notice_info_list = {}
-    local ret = get_notice_info_from_file()
-
-    if type(ret) == 'table' and #ret > 0 then
-        for _, notice_info in ipairs(ret) do
-            table.insert(notice_info_list, notice_info)
-        end
-    end
-
-    return notice_info_list
-end
-
-local function __AW_push_notification_msg()
-    local c = uci.cursor()
-    local service_mode = c:get("mptun", "global", "service_mode") or ''
-    if service_mode ~= 'IPRB' then
-        return
-    end
-    local notice_msg_list = __AW_get_notice_msg() or {}
-    ubus.call('gl-session', 'notify', { name = "mptun.push_notification_msg", data = notice_msg_list })
-end
-
-function M.AW_get_notice_msg(params)
-    if not enable_extend_feature then
-        return {}
-    end
-
-    return __AW_get_notice_msg()
-end
-
-function M.AW_push_notification_msg(params)
-    if not enable_extend_feature then
-        return {}
-    end
-
-    return __AW_push_notification_msg()
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function get_network_id()
-    local c = uci.cursor()
-    local net_id = c:get("mptun", "IPRB", "net_id")
-
-    if net_id ~= nil and string.match(net_id, valid_query_and_body_params["networkId"]) == net_id then
-        return { err_code = 0, networkId = net_id }
-    end
-    local res = get_info_from_cloud()
-    if res.status_code ~= 0 or not res.status_code or res.status_code ~= 200 then
-        return { err_code = -1 }
-    else
-        local res_table
-        local ok = false
-        if res.body then
-            ok, res_table = pcall(cjson.decode, res.body)
-        end
-        if ok and res_table and res_table.info and type(res_table.info) == "table" and res_table.info.networkId then
-            net_id = res_table.info.networkId:match("^%s*(.-)%s*$")
-            if string.match(net_id, valid_query_and_body_params["networkId"]) == net_id then
-                c:set("mptun", "IPRB", "net_id", net_id)
-                c:commit("mptun")
-                return { err_code = 0, networkId = net_id }
-            end
-        end
-    end
-    return { err_code = -1 }
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function send_net_ctrl_msg(active)
-    local enableStatus
-    if active == 'start' then
-        enableStatus = true
-    else
-        enableStatus = false
-    end
-    local res = get_network_id()
-    if not res and res.err_code ~= 0 then
-        return { err_code = -1, err_msg = "get networkID fail!" }
-    end
-    --local networkId = res.networkId
-    local opt = {
-        ["req_method"] = "POST",
-        ["req_path"] = req_path["req_net_ctrl"],
-        ["req_body"] = {
-            --["networkId"] = networkId,
-            ["enableStatus"] = enableStatus
-        }
-    }
-    res = __raw_request(opt)
-    if res.err_code ~= 0 or not res.status_code or res.status_code ~= 200 then
-        return { err_code = -1, err_msg = "https communicate fail!", status_code = res.status_code, body = res.body }
-    else
-        return { err_code = 0, status_code = res.status_code, body = res.body }
-    end
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function __start_service(params)
-    if __is_meet_startup_conditions() == false then
-        return { err_code = -4, err_msg = "Startup conditions not met !" }
-    end
-    local option = {}
-    option.disabled = '0'
-    option.identity = 'primary'
-    set_IPRB_option(option)
-    push_status_to_wb()
-    local resp = send_net_ctrl_msg('start')
-    if resp == nil or resp.err_code ~= 0 then
-        return { err_code = -1, err_msg = "communicate fail !" }
-    end
-
-    local ok = false
-    local res_table
-    if resp.body then
-        ok, res_table = pcall(cjson.decode, resp.body)
-    end
-    if not ok or res_table == nil then
-        return { err_code = -2, err_msg = "response error !" }
-    end
-    if res_table.info ~= nil and type(res_table.info) == "boolean" then
-        if res_table.info ~= true then
-            return { err_code = -3, err_msg = "set fail !" }
-        end
-        return {}
-    else
-        return { err_code = -2, err_msg = "response error !" }
-    end
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: start_service
-    @method-desc: start mptun primary side service.
-    @out number     ?err_code   Error Code
-    @out string     ?err_msg    Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "start_service",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.start_service(params)
-    if not check_AW_has_right_identity("primary") then
-        return { err_code = -1, err_msg = "invalid identity" }
-    end
-    debug_event_to_file("AW primary send start !!")
-    return __start_service(params)
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function __pause_service(params)
-    local option = {}
-    option.disabled = '1'
-    option.identity = 'primary'
-    set_IPRB_option(option)
-
-    send_net_ctrl_msg('stop')
-    -- TODO stop()
-    ngx.timer.at(2.0, function()
-        ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
-    end)
-    local c = uci.cursor()
-    c:set("mptun", "global", "enable", "0")
-    c:commit("mptun")
-    push_status_to_wb()
+    if result.err_code then return result end
+    local _, err = ubus.call('gl-session', 'notify', { name = "mptun.AW_global_summary", data = result })
+    if err then return { err_code = -1, err_msg = 'notify_failed' } end
     return {}
 end
 
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: pause_service
-    @method-desc: stop mptun primary side service.
-    @out number     ?err_code   Error Code
-    @out string     ?err_msg    Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "pause_service",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.pause_service(params)
-    if not check_AW_has_right_identity("primary") then
-        return { err_code = -1, err_msg = "invalid identity" }
-    end
-    debug_event_to_file("AW primary send stop !!")
-    return __pause_service(params)
+function M.push_global_summary_to_wb()
+    return __push_global_summary_to_wb()
 end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function __start_connect(params)
-    if __is_meet_startup_conditions() == false then
-        return { err_code = -3, err_msg = "Startup conditions not met !" }
+-- The backend owns persistence and cloud/local application. Notify only after
+-- it returns; a cloud failure does not undo an already saved local setting.
+local function control_secondary(method, params)
+    if params ~= nil and (type(params) ~= 'table' or next(params) ~= nil) then
+        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
     end
-    local option = {}
-    option.disabled = '0'
-    option.identity = 'secondary'
-    set_IPRB_option(option)
-    push_status_to_wb()
-    local resp = send_net_ctrl_msg('start')
-    if resp == nil or resp.err_code ~= 0 then
-        return { err_code = -1, err_msg = "communicate fail !" }
+    if method == 'start_connect' and not __is_meet_startup_conditions() then
+        return { err_code = -3, err_msg = 'Startup conditions not met !' }
     end
-
-    local ok = false
-    local res_table
-    if resp.body ~= nil then
-        ok, res_table = pcall(cjson.decode, resp.body)
-    end
-    if not ok or res_table == nil then
-        return { err_code = -2, err_msg = "response error !" }
-    end
-    if res_table.info ~= nil and type(res_table.info) == "boolean" then
-        if res_table.info ~= true then
-            return { err_code = -3, err_msg = "set fail !" }
-        end
-        return {}
-    else
-        return { err_code = -2, err_msg = "response error !" }
-    end
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: start_connect
-    @method-desc: start mptun second side connections.
-    @out number     ?err_code   Error Code
-    @out string     ?err_msg    Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "start_connect",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.start_connect(params)
-    if not check_AW_has_right_identity("secondary") then
-        return { err_code = -1, err_msg = "invalid identity" }
-    end
-    debug_event_to_file("AW second send start !!")
-    return __start_connect(params)
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function __pause_connect(params)
-    local option = {}
-    option.disabled = '1'
-    option.identity = 'secondary'
-    set_IPRB_option(option)
-    send_net_ctrl_msg('stop')
-    -- TODO stop()
-    ngx.timer.at(2.0, function()
-        ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
-    end)
-    local c = uci.cursor()
-    c:set("mptun", "global", "enable", "0")
-    c:commit("mptun")
-    push_status_to_wb()
-
-    return {}
-end
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: pause_connect
-    @method-desc: stop mptun second side connections.
-    @out number     ?err_code   Error Code
-    @out string     ?err_msg    Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "pause_connect",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.pause_connect(params)
-    if not check_AW_has_right_identity("secondary") then
-        return { err_code = -1, err_msg = "invalid identity" }
-    end
-    debug_event_to_file("AW second send stop !!")
-    return __pause_connect(params)
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
---[[
-    @method-type: call
-    @method-name: set_use_exit_node
-    @method-desc: sencond side set use exit node or not.
-    @in bool        enabled     use exit node or not
-    @out number     ?err_code   Error Code
-    @out string     ?err_msg    Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "set_use_exit_node",{"enabled": true}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
---]]
-function M.set_use_exit_node(params)
-    local enabled
-    if params ~= nil and params.enabled ~= nil and type(params.enabled) == "boolean" then
-        enabled = params.enabled
-    else
-        return { err_code = -1, err_msg = "invalid params !" }
-    end
-
-    local opt = {
-        ["req_method"] = "POST",
-        ["req_path"] = req_path["req_use_exit"],
-        ["req_body"] = {
-            ["useInternetExit"] = enabled
-        }
-    }
-    local resp = __raw_request(opt)
-    if resp.err_code ~= 0 or resp.status_code == nil or resp.status_code ~= 200 then
-        return { err_code = -1, err_msg = "https communicate fail!" }
-    elseif resp.body ~= nil then
-        local ok
-        local res_table
-        ok, res_table = pcall(cjson.decode, resp.body)
-        if not ok or res_table == nil then
-            return { err_code = -2, err_msg = "error https respones!" }
-        end
-        if res_table.info ~= nil and type(res_table.info) == "boolean" then
-            if res_table.info ~= true then
-                return { err_code = -3, err_msg = "set fail!" }
-            end
-        else
-            return { err_code = -2, err_msg = "error https respones!" }
-        end
-        local option = {}
-        if enabled then
-            option.use_exit = '1'
-        else
-            option.use_exit = '0'
-        end
-        --option.identity = 'secondary'
-        set_IPRB_option(option)
+    local result = iprb_backend_call(method, 60000)
+    local changed = result.changed
+    result.changed = nil
+    if changed or result.err_msg == 'iprb_backend_unavailable' then
+        -- On timeout the operation may already have committed; query current state.
         push_status_to_wb()
-
-        return {}
     end
+    return result
 end
 
-local function __report_net_resource(params)
-    local resource = {}
-    if params == nil or params.resource == nil or type(params.resource) ~= "table" then
-        return { err_code = -1, err_msg = "invalid params !" }
+--[[
+    @method-type: call
+    @method-name: clear_IPRB_optional_data
+    @method-desc: Best-effort clearing of optional speedtest and Wi-Fi sync data.
+--]]
+function M.clear_IPRB_optional_data(params)
+    if params ~= nil and (type(params) ~= 'table' or next(params) ~= nil) then
+        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
     end
-    for index, item in ipairs(params.resource) do
-        local node = normalize_report_net_resource_node(item)
-        if node == nil then
-            return { err_code = -1, err_msg = "invalid params !" }
-        end
-        resource[index] = node
-    end
-
-    local opt = {
-        ["req_method"] = "POST",
-        ["req_path"] = req_path["report_net_resource"],
-        ["req_body"] = {
-            ["resources"] = resource
-        }
-    }
-    local resp = __raw_request(opt)
-    if resp.err_code ~= 0 or resp.status_code == nil or resp.status_code ~= 200 then
-        return { err_code = -1, err_msg = "https communicate fail!" }
-    elseif resp.body ~= nil then
-        local ok
-        local res_table
-        ok, res_table = pcall(cjson.decode, resp.body)
-        if not ok or res_table == nil then
-            return { err_code = -2, err_msg = "error https respones!" }
-        end
-
-        if res_table.info ~= nil and type(res_table.info) == "boolean" and res_table.info == true then
-            return {}
-        end
-        return { err_code = -3, err_msg = "report fail" }
-    end
-end
-
-function M.report_net_resource(params)
-    if not enable_extend_feature then
-        return {}
-    end
-
-    return __report_net_resource(params)
-end
-
-local function get_accessiable_ifname_list()
-    local c = uci.cursor()
-    local if_list = c:get("mptun", "IPRB", "accessiable_ifname") or ''
-    local accessiable_ifname_list = {}
-
-    if type(if_list) == "table" then
-        for _, v in pairs(if_list) do
-            if type(v) == "string" and v ~= '' then
-                table.insert(accessiable_ifname_list, v)
+    for _, object in ipairs({ 'mpifd.speedtest_client', 'mpifd.wifi_sync' }) do
+        -- oui.ubus yields on Lua 5.1; handle returned errors without pcall.
+        local result, err = ubus.call(object, 'clear', {}, 3000)
+        -- An optional module (or an older clear method) may be absent.
+        if err ~= nil then
+            if err ~= 3 and err ~= 4 and err ~= 'Method not found' and err ~= 'Not found' then
+                ngx.log(ngx.ERR, 'IPRB optional clear failed: ', object, ': ', tostring(err))
             end
-        end
-    elseif type(if_list) == "string" and if_list ~= '' then
-        table.insert(accessiable_ifname_list, if_list)
-    end
-
-    return accessiable_ifname_list
-end
-
-local function report_local_accessible_net_resource()
-    local accessiable_ifname_list = get_accessiable_ifname_list()
-    local resources = {}
-    for _, ifname in pairs(accessiable_ifname_list) do
-        local s = ubus.call("network.interface." .. ifname, "status")
-        if s and s['ipv4-address'] then
-            for _, info in pairs(s['ipv4-address'] or {}) do
-                local network = to_network_cidr(info.address, info.mask)
-                if network ~= nil then
-                    local per_info = {}
-                    per_info.interface_name = ifname
-                    per_info.network = network
-                    table.insert(resources, per_info)
-                end
-            end
+        elseif type(result) == 'table' and (result.error or
+            (result.err_code ~= nil and result.err_code ~= 0)) then
+            ngx.log(ngx.ERR, 'IPRB optional clear failed: ', object, ': ',
+                tostring(result.err_msg or result.err_code or 'RPC error'))
         end
     end
-    return __report_net_resource({ resource = resources })
-end
-
-local function get_interface_by_device_from_ubus(device, accessiable_ifname_map)
-    local dump = ubus.call("network.interface", "dump", {})
-    local interfaces = dump and dump.interface
-    if type(interfaces) == 'table' then
-        for _, item in ipairs(interfaces) do
-            if type(item) == 'table' and type(item.interface) == 'string' then
-                if item.l3_device == device and accessiable_ifname_map[item.interface] == true then
-                    debug_event_to_file("newaddr debug: ubus hit device=" .. tostring(device) ..
-                        " ifname=" .. tostring(item.interface))
-                    return item.interface
-                end
-            end
-        end
-    end
-
-    return nil
-end
-
-local function get_interface_by_device_from_uci(device, accessiable_ifname_map)
-    local c = uci.cursor()
-
-    local function value_matches(value)
-        if type(value) == 'table' then
-            for _, item in ipairs(value) do
-                if value_matches(item) then
-                    return true
-                end
-            end
-            return false
-        end
-
-        if type(value) ~= 'string' then
-            return false
-        end
-
-        for token in string.gmatch(value, '%S+') do
-            if token == device then
-                return true
-            end
-        end
-
-        return false
-    end
-
-    local function value_to_string(value)
-        if type(value) == 'table' then
-            local values = {}
-            for _, item in ipairs(value) do
-                if type(item) == 'string' then
-                    table.insert(values, item)
-                end
-            end
-            return table.concat(values, " ")
-        end
-
-        return tostring(value)
-    end
-
-    local found_ifname
-    c:foreach('network', 'interface', function(section)
-        local ifname = section['.name']
-        if found_ifname ~= nil or type(ifname) ~= 'string' or accessiable_ifname_map[ifname] ~= true then
-            return
-        end
-
-        -- Current UCI fallback only handles direct device/ifname matches on static/dhcp interfaces.
-        if section.proto ~= 'static' and section.proto ~= 'dhcp' then
-            debug_event_to_file("newaddr debug: uci skip ifname=" .. tostring(ifname) ..
-                " proto=" .. tostring(section.proto))
-            return
-        end
-
-        if value_matches(section.device) or value_matches(section.ifname) then
-            found_ifname = ifname
-            debug_event_to_file("newaddr debug: uci hit device=" .. tostring(device) ..
-                " ifname=" .. tostring(ifname) ..
-                " section.device=" .. value_to_string(section.device) ..
-                " section.ifname=" .. value_to_string(section.ifname))
-        end
-    end)
-
-    return found_ifname
-end
-
-local function get_interface_by_device(device, accessiable_ifname_map)
-    if type(device) ~= 'string' or device == '' then
-        return nil
-    end
-
-    if type(accessiable_ifname_map) ~= 'table' or next(accessiable_ifname_map) == nil then
-        return nil
-    end
-
-    local ifname = get_interface_by_device_from_ubus(device, accessiable_ifname_map)
-    if type(ifname) == 'string' and ifname ~= '' then
-        return ifname
-    end
-
-    return get_interface_by_device_from_uci(device, accessiable_ifname_map)
-end
-
-local function get_accessiable_ifname_by_device(device)
-    local accessiable_ifname_list = get_accessiable_ifname_list()
-    if #accessiable_ifname_list == 0 then
-        return nil
-    end
-
-    local accessiable_ifname_map = {}
-    for _, v in pairs(accessiable_ifname_list) do
-        if type(v) == 'string' and v ~= '' then
-            accessiable_ifname_map[v] = true
-        end
-    end
-
-    debug_event_to_file("newaddr debug: accessiable_ifname_list=" ..
-        table.concat(accessiable_ifname_list, ",") .. " device=" .. tostring(device))
-
-    return get_interface_by_device(device, accessiable_ifname_map)
-end
-
-local function deal_network_event_newaddr(event_info)
-    if type(event_info) ~= 'table' then
-        return {}
-    end
-
-    local code = tonumber(event_info.event_code)
-    if code ~= 10 then
-        return {}
-    end
-
-    local ip_address = event_info.ip_address
-    local prefixlen = tonumber(event_info.prefixlen)
-    local device = event_info.device
-
-    debug_event_to_file("newaddr debug: event code=" .. tostring(event_info.event_code) ..
-        " ip=" .. tostring(ip_address) ..
-        " prefixlen=" .. tostring(event_info.prefixlen) ..
-        " device=" .. tostring(device))
-
-    if type(ip_address) ~= 'string' or ip_address == '' or prefixlen == nil or type(device) ~= 'string' or device == '' then
-        debug_event_to_file("newaddr debug: invalid event params")
-        return {}
-    end
-
-    if get_accessiable_ifname_by_device(device) == nil then
-        return {}
-    end
-
-    local c = uci.cursor()
-    local tmp_service_mode = c:get("mptun", "global", "service_mode") or ''
-    local tmp_identity = c:get("mptun", "IPRB", "identity") or ''
-    local tmp_disabled = c:get("mptun", "IPRB", "disabled") or '0'
-    debug_event_to_file("newaddr debug: mode service=" .. tostring(tmp_service_mode) ..
-        " identity=" .. tostring(tmp_identity) ..
-        " disabled=" .. tostring(tmp_disabled))
-    if tmp_service_mode == 'IPRB' then
-        if tmp_identity == 'primary' then
-            debug_event_to_file("newaddr debug: primary report resource")
-            report_local_accessible_net_resource()
-            return {}
-        elseif tmp_identity == 'secondary' then
-            -- Temporary implementation: reconnect to force a recheck for conflicts.
-            if tmp_disabled ~= '1' then
-                debug_event_to_file("newaddr debug: secondary schedule restart")
-                ngx.timer.at(2.0, function()
-                    ngx.pipe.spawn({ "/etc/init.d/mptun", "restart" }):wait()
-                end)
-                return {}
-            end
-            debug_event_to_file("newaddr debug: secondary disabled skip restart")
-        end
-    end
-    debug_event_to_file("newaddr debug: mode not handled")
-end
-
-set_network_event_deal_func("new address", deal_network_event_newaddr)
-
-local function deal_network_event(event_info)
-    local code = tonumber(event_info and event_info.event_code)
-    local event = code and network_event_type[code]
-    if not event then
-        return {}
-    end
-    if type(event.deal_func) == 'function' then
-        return event.deal_func(event_info)
-    end
-
-    return {}
-end
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function __reset_remote_network()
-    local opt = {
-        ["req_method"] = "POST",
-        ["req_path"] = req_path["req_reset"],
-    }
-    local resp = __raw_request(opt)
-    if resp.err_code ~= 0 or resp.status_code == nil or resp.status_code ~= 200 then
-        return { err_code = -1, err_msg = "https communicate fail!" }
-    elseif resp.body ~= nil then
-        local ok
-        local res
-        ok, res = pcall(cjson.decode, resp.body)
-        if ok and res.info ~= nil and type(res.info) == 'boolean' and res.info == true then
-            return { err_code = 0 }
-        elseif res.msg ~= nil then
-            return { err_code = -3, err_msg = res.msg }
-        end
-    end
-    return { err_code = -2, err_msg = "reset fail !" }
-end
-
-local function __clear_local_reset_data()
-    local c = uci.cursor()
-    local current_mode = c:get("mptun", "global", "service_mode")
-    if current_mode == 'IPRB' then
-        c:delete("mptun", "global", "service_mode")
-    end
-    c:delete("mptun", "IPRB")
-    c:commit("mptun")
-
-    push_status_to_wb()
-    __push_global_summary_to_wb()
     return {}
 end
 
+--[[
+    @method-type: call
+    @method-name: IPRB_req_access_by_code
+    @method-desc: Join an IPRB network using an access code.
+    @in string dynamicCode Access code.
+    @out number ?err_code Error Code
+    @out string ?err_msg Error Message
+    @in-example: {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","IPRB_req_access_by_code",{"dynamicCode":"IGPMNDOE"}]}
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
+--]]
+function M.IPRB_req_access_by_code(params)
+    if type(params) ~= 'table' or type(params.dynamicCode) ~= 'string' or
+        params.dynamicCode == '' then
+        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+    end
+    -- 后台完成云端验证、状态保存及通知；成功只表示入网请求已处理。
+    -- Joining may also check startup conditions and pause before publishing status.
+    return iprb_backend_call('access_by_code', 90000, { dynamicCode = params.dynamicCode })
+end
+
+function M.IPRB_secondary_start_connect(params)
+    return control_secondary('start_connect', params)
+end
+
+function M.IPRB_secondary_pause_connect(params)
+    return control_secondary('pause_connect', params)
+end
+
+--[[
+    @method-type: call
+    @method-name: IPRB_set_primary_alias
+    @method-desc: Save the primary alias locally on a secondary device.
+    @in string networkId Network ID; empty skips membership comparison.
+    @in string alias Local alias; empty clears it.
+    @out number ?err_code Error Code
+    @out string ?err_msg Error Message
+    @in-example: {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","IPRB_set_primary_alias",{"networkId":"","alias":"primary1"}]}
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
+--]]
+function M.IPRB_set_primary_alias(params)
+    if type(params) ~= 'table' or type(params.networkId) ~= 'string' or type(params.alias) ~= 'string' then
+        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+    end
+    return iprb_backend_call('set_primary_alias', 60000, { networkId = params.networkId, alias = params.alias })
+end
+
+--[[
+    @method-type: call
+    @method-name: set_IPRB_proxy_private_net
+    @method-desc: Set private-network proxying on an IPRB secondary device.
+    @in bool        enabled     Whether private networks participate in tunnel routing.
+    @out number     ?err_code   Error Code
+    @out string     ?err_msg    Error Message
+    @in-example: {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","set_IPRB_proxy_private_net",{"enabled":true}]}
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
+    Backend saves configuration and waits for a bounded mptun restart when enabled.
+--]]
+function M.set_IPRB_proxy_private_net(params)
+    if type(params) ~= 'table' or type(params.enabled) ~= 'boolean' then
+        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+    end
+    return iprb_backend_call('set_proxy_private_net', 60000, { enabled = params.enabled })
+end
 --[[
     @method-type: call
     @method-name: reset
@@ -1882,322 +1916,212 @@ end
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.reset(params)
-    local c = uci.cursor()
-    -- Cache the mode before reset clears it to determine whether a network exists.
-    local service_mode_before_reset = c:get("mptun", "global", "service_mode") or ''
-    local ret = __reset_remote_network()
-    if type(ret) == 'table' and ret.err_code == 0 then
-        local result = __clear_local_reset_data()
-        ngx.timer.at(0, function()
-            ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
-        end)
-        -- no networks
-        if service_mode_before_reset == '' then
-            notify_gl_cloud_module_detached()
-        end
-        return result
+    if params ~= nil and (type(params) ~= 'table' or next(params) ~= nil) then
+        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
     end
-    return ret
+    -- 后台负责云端重置、本地清理、限时停止及通知；不以本地归属作为前置条件。
+    return iprb_backend_call('reset', 60000)
 end
 
-local function IPRB_role_is_inited()
-    local c = uci.cursor()
-    local identity = c:get("mptun", "IPRB", "identity") or ''
-    local attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or ''
-
-    return identity == 'primary' or identity == 'secondary' or
-        attempt_to_be == 'primary' or attempt_to_be == 'secondary'
+--[[
+    @method-type: call
+    @method-name: clean_kicked_out
+    @method-desc: Clear the secondary kicked-out flag before joining again.
+    @out number ?err_code Error Code
+    @out string ?err_msg Error Message
+    @in-example: {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","clean_kicked_out",{}]}
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
+--]]
+function M.clean_kicked_out(params)
+    if params ~= nil and (type(params) ~= 'table' or next(params) ~= nil) then
+        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+    end
+    return iprb_backend_call('clean_kicked_out', 60000)
 end
+
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 --[[
     @method-type: call
     @method-name: get_started
-    @method-desc: Select a role and save it as the startup intent.
-    @in string      attempt_to_be       The role want to set(primary or secondary)
+    @method-desc: Initialize IPRB locally and restart mpifd to load the configuration.
     @out number     ?err_code   Error Code
     @out string     ?err_msg    Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_started",{"attempt_to_be": "primary"}]}
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "get_started",{}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
 --]]
 function M.get_started(params)
-    local attempt_to_be
-    if params ~= nil and params.attempt_to_be ~= nil and type(params.attempt_to_be) == "string" then
-        if params.attempt_to_be == 'primary' or params.attempt_to_be == 'secondary' then
-            attempt_to_be = params.attempt_to_be
-        else
-            return { err_code = -1, err_msg = "invalid params !" }
+    if params ~= nil and (type(params) ~= 'table' or next(params) ~= nil) then
+        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+    end
+
+    local c = uci.cursor()
+    if not c:load('mptun') then
+        c:close()
+        return { err_code = -1, err_msg = 'config_load_failed' }
+    end
+    -- 每秒重新读取升级恢复标记，最多等待 10 秒。
+    for _ = 1, 10 do
+        if c:get('mptun', 'global', 'need_sync') ~= '1' then break end
+        c:close()
+        ngx.sleep(1)
+        c = uci.cursor()
+        if not c:load('mptun') then
+            c:close()
+            return { err_code = -1, err_msg = 'config_load_failed' }
         end
-    else
-        return { err_code = -1, err_msg = "invalid params !" }
     end
-    local ret = IPRB_role_is_inited()
-    if ret then
-        return { err_code = -2, err_msg = "is inited !" }
+    if c:get('mptun', 'global', 'need_sync') == '1' then
+        c:close()
+        return { err_code = -1, err_msg = 'upgrade_sync_pending' }
     end
-    local opt = {
-        attempt_to_be = attempt_to_be
-    }
-    set_IPRB_option(opt)
-    push_status_to_wb()
+    local service_mode = c:get('mptun', 'global', 'service_mode') or ''
+    if service_mode ~= '' and service_mode ~= 'IPRB' then
+        c:close()
+        return { err_code = -1, err_msg = 'invalid_service_mode' }
+    end
+    local net_id = c:get('mptun', 'IPRB', 'net_id') or ''
+    if net_id ~= '' then
+        c:close()
+        return { err_code = -2, err_msg = 'already_initialized' }
+    end
+
+    -- inited 表示配置已提交，不代表重启成功；重试时跳过已完成的配置阶段。
+    if service_mode ~= 'IPRB' or c:get('mptun', 'IPRB', 'inited') ~= '1' then
+        -- mptun_tools.sh 安装为 /usr/bin/mptun_tools，身份由脚本输出。
+        local process = ngx.pipe.spawn({ '/usr/bin/mptun_tools', 'get_IPRB_identity' },
+            { stdout_read_timeout = 5000, wait_timeout = 5000 })
+        if not process then
+            c:close()
+            return { err_code = -1, err_msg = 'get_identity_failed' }
+        end
+        local output = process:stdout_read_all()
+        if not output and process.kill then process:kill(9) end
+        process:wait()
+        local identity = output and output:match('^%s*(.-)%s*$')
+        if identity ~= 'primary' and identity ~= 'secondary' then
+            c:close()
+            return { err_code = -1, err_msg = 'get_identity_failed' }
+        end
+
+        -- 身份和初始化标志一起提交，其他已有配置保留。
+        if not c:get('mptun', 'IPRB') and not c:set('mptun', 'IPRB', 'service_instance') then
+            c:close()
+            return { err_code = -1, err_msg = 'config_write_failed' }
+        end
+        if not c:set('mptun', 'global', 'service_mode', 'IPRB') or
+            not c:set('mptun', 'IPRB', 'identity', identity) or
+            not c:set('mptun', 'IPRB', 'inited', '1') then
+            c:close()
+            return { err_code = -1, err_msg = 'config_write_failed' }
+        end
+        if not c:commit('mptun') then
+            c:close()
+            return { err_code = -1, err_msg = 'config_commit_failed' }
+        end
+    end
+    c:close()
+
+    -- inited 只在 state.start() 读取，必须重启；失败保留已提交配置。
+    -- 固件的命令代理不返回退出码，因此仅以 restart 成功后输出的标记判定成功。
+    local process = ngx.pipe.spawn({ 'sh', '-c',
+        "/etc/init.d/mpifd restart >/dev/null 2>&1 && printf 'mpifd_restarted\\n'"
+    }, { stdout_read_timeout = 30000, wait_timeout = 30000 })
+    if not process then
+        return { err_code = -1, err_msg = 'mpifd_restart_failed' }
+    end
+    local output = process:stdout_read_all()
+    if not output and process.kill then process:kill(9) end
+    process:wait()
+    if output ~= 'mpifd_restarted\n' then
+        return { err_code = -1, err_msg = 'mpifd_restart_failed' }
+    end
     return {}
 end
 
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
+-- 配置已落盘后尽力重启 mpifd、重连 cloud，单个动作失败不影响另一个。
+local function restart_after_IPRB_sync(premature)
+    if premature then return end
+    local process, err = ngx.pipe.spawn({ '/etc/init.d/mpifd', 'restart' },
+        { wait_timeout = 3000 })
+    if process then
+        local ok
+        ok, err = process:wait()
+        if not ok then
+            ngx.log(ngx.ERR, 'IPRB sync: failed to restart mpifd: ', err)
+        end
+    else
+        ngx.log(ngx.ERR, 'IPRB sync: failed to spawn mpifd restart: ', err)
+    end
+
+    -- oui.ubus 会让出协程，不套 pcall；超时或调用失败只记录日志。
+    local _, reconnect_err = ubus.call('gl-cloud', 'reconnect', {}, 3000)
+    if reconnect_err ~= nil then
+        ngx.log(ngx.ERR, 'IPRB sync: failed to reconnect cloud: ', reconnect_err)
+    end
+end
+
 --[[
     @method-type: call
-    @method-name: clean_kicked_out_status
-    @method-desc: clean option be_kicked_out.
-    @out number     ?err_code   Error Code
-    @out string     ?err_msg    Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "clean_kicked_out_status",{}]}
-    @out-example: {"jsonrpc": "2.0", "id": 1, "result": {}}
+    @method-name: sync_IPRB_config
+    @method-desc: Restore IPRB configuration from cloud after an upgrade.
+    @out number ?err_code Error Code
+    @out string ?err_msg Error Message
 --]]
-function M.clean_kicked_out_status(params)
-    local c = uci.cursor()
-    c:delete("mptun", "IPRB", "be_kicked_out")
-    c:commit("mptun")
+function M.sync_IPRB_config()
+    -- need_sync 由 cloud 检查；这里独立查询，不调用 mpifd。
+    local response = __raw_request({
+        req_method = 'POST', req_path = req_path.req_get_identity, req_body = {}
+    })
+    if response.err_code ~= 0 or response.status_code ~= 200 then
+        return { err_code = -1, err_msg = 'cloud_request_failed' }
+    end
+    local ok, body = pcall(cjson.decode, response.body)
+    if not ok or type(body) ~= 'table' or body.code ~= 0 then
+        return { err_code = -1, err_msg = 'invalid_cloud_response' }
+    end
 
-    push_status_to_wb()
+    local info = body.info
+    -- 只有显式 null 表示无网络；无法确定归属时保留标记。
+    if info ~= cjson.null and (type(info) ~= 'table' or
+        type(info.networkPlan) ~= 'string' or info.networkPlan == '') then
+        return { err_code = -1, err_msg = 'invalid_simple_info' }
+    end
+    local is_iprb = info ~= cjson.null and info.networkPlan:sub(1, 4) == 'IPRB'
+    local c = uci.cursor()
+    if not c:load('mptun') then
+        c:close()
+        return { err_code = -1, err_msg = 'config_load_failed' }
+    end
+    if is_iprb then
+        if not c:get('mptun', 'IPRB') then c:set('mptun', 'IPRB', 'service_instance') end
+        c:set('mptun', 'global', 'service_mode', 'IPRB')
+        -- 已确定归属后尽力写入，不因可选/缺失字段阻断迁移。
+        if info.networkId ~= nil and info.networkId ~= cjson.null then
+            c:set('mptun', 'IPRB', 'net_id', info.networkId)
+        end
+        if info.primaryDevice ~= nil and info.primaryDevice ~= cjson.null then
+            c:set('mptun', 'IPRB', 'identity', info.primaryDevice and 'primary' or 'secondary')
+        end
+        if info.enableStatus ~= nil and info.enableStatus ~= cjson.null then
+            c:set('mptun', 'IPRB', 'disabled', info.enableStatus and '0' or '1')
+        end
+        c:set('mptun', 'IPRB', 'inited', '1')
+    end
+    c:delete('mptun', 'global', 'need_sync')
+    local committed = c:commit('mptun')
+    c:close()
+    if not committed then
+        return { err_code = -1, err_msg = 'config_commit_failed' }
+    end
+
+    if is_iprb then
+        local scheduled, err = ngx.timer.at(1, restart_after_IPRB_sync)
+        if not scheduled then ngx.log(ngx.ERR, 'IPRB sync: restart timer failed: ', err) end
+    end
     return {}
 end
 
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function pre_req_deal_identity_verification(req_path, params)
-    local c = uci.cursor()
-    local enabled
-    local is_active = nil
-    local service_mode = c:get("mptun", "global", "service_mode") or ''
-    local active = c:get("mptun", "IPRB", "active") or ''
-
-    if service_mode == 'IPRB' then
-        enabled = IPRB_is_enabled()
-        c:load("mptun")
-        if active == '1' then
-            is_active = true
-        else
-            if active == '0' then
-                is_active = false
-            end
-        end
-
-        -- Synchronization will only be performed once both the local and cloud-based enabled statuses are clear.
-        if enabled ~= nil and is_active ~= nil and enabled ~= is_active then
-            if enabled then
-                send_net_ctrl_msg('start')
-                debug_event_to_file("sync  send start !!")
-            else
-                send_net_ctrl_msg('stop')
-                debug_event_to_file("sync  send stop !!")
-            end
-        end
-    end
-    return 0
-end
-local function pre_req_get_access_code()
-    M.get_node_info()
-    return 0
-end
-local function pre_req_access_by_code()
-    M.get_node_info()
-end
-local function parse_response_identity_verification(resp)
-    local ok = false
-    local res_table
-    if resp.body ~= nil then
-        ok, res_table = pcall(cjson.decode, resp.body)
-    end
-    if not ok or res_table == nil then
-        return -1
-    end
-
-    local net_id, is_primary, is_active, is_use_exit, creation_channel
-    local is_IPRB = false
-    local is_classic = false
-    local parse_fail = false
-    if res_table ~= nil and res_table.info ~= nil and type(res_table.info) == "table" then
-        if res_table.info.networkPlan ~= nil and type(res_table.info) == "string" then
-            if res_table.info.networkPlan:match("^IPRB(_%w+)?$") ~= nil then
-                is_IPRB = true
-            else
-                is_classic = true
-            end
-        end
-        if res_table.info.planCode ~= nil and type(res_table.info.planCode) == "string" then
-            local code = tonumber(res_table.info.planCode)
-            if code then
-                if code == 7 or code == 8 then
-                    is_IPRB = true
-                else
-                    is_classic = true
-                end
-            end
-        end
-        if res_table.info.networkId ~= nil and type(res_table.info.networkId) == "string" then
-            net_id = res_table.info.networkId:match("^%s*(.-)%s*$")
-            if is_IPRB and string.match(net_id, valid_query_and_body_params["networkId"]) ~= net_id then
-                parse_fail = true
-            end
-        elseif is_IPRB then
-            parse_fail = true
-        end
-        if is_IPRB then
-            if res_table.info.primaryDevice ~= nil and type(res_table.info.primaryDevice) == "boolean" then
-                is_primary = res_table.info.primaryDevice
-            else
-                parse_fail = true
-            end
-            if res_table.info.enableStatus ~= nil and type(res_table.info.enableStatus) == "boolean" then
-                is_active = res_table.info.enableStatus
-            else
-                parse_fail = true
-            end
-            if res_table.info.useInternetExit ~= nil and type(res_table.info.useInternetExit) == "boolean" then
-                is_use_exit = res_table.info.useInternetExit
-            end
-            if type(res_table.info.creationChannel) == "string" then
-                creation_channel = res_table.info.creationChannel
-            end
-        end
-    else
-        return -1
-    end
-    if parse_fail == true then
-        return -2
-    end
-    local mode = ""
-    local identity = ''
-    local active = ''
-    local use_exit = ''
-    local sub_mode = ''
-    if is_IPRB == true then
-        mode = "IPRB"
-        if is_primary == true then
-            identity = "primary"
-        else
-            identity = "secondary"
-            if is_use_exit == true then
-                use_exit = "1"
-            else
-                use_exit = "0"
-            end
-        end
-        if is_active == true then
-            active = "1"
-        else
-            active = "0"
-        end
-        if type(creation_channel) == "string" and creation_channel == creationChannel["AstroMesh"] then
-            sub_mode = "AstroMesh"
-        else
-            sub_mode = "classic"
-        end
-    elseif is_classic == true then
-        mode = "classic"
-    end
-
-    return {
-        err_code = 0,
-        mode = tostring(mode),
-        identity = tostring(identity),
-        active = tostring(active),
-        net_id = tostring(net_id),
-        use_exit = tostring(use_exit),
-        sub_mode = tostring(sub_mode)
-    }
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function snoop_response_identity_verification(resp)
-    local ret = parse_response_identity_verification(resp)
-    if type(ret) == "table" and ret.err_code == 0 then
-        local c = uci.cursor()
-        if ret.mode == 'IPRB' then
-            if ret.sub_mode == 'AstroMesh' then
-                local reset_ret = __reset_remote_network()
-                ngx.sleep(2)
-                if type(reset_ret) ~= 'table' or reset_ret.err_code ~= 0 then
-                    debug_event_to_file(
-                        "failed to reset remote AstroMesh network: " ..
-                        tostring(reset_ret and reset_ret.err_msg)
-                    )
-                end
-                return {}
-            end
-            local opt = {}
-            opt.identity = tostring(ret.identity)
-            opt.attempt_to_be = tostring(ret.identity)
-            opt.active = tostring(ret.active)
-            opt.net_id = tostring(ret.net_id)
-            opt.use_exit = tostring(ret.use_exit)
-
-            -- If the local enabled status is unclear, update it according to the cloud status.
-            local disabled = c:get("mptun", "IPRB", "disabled")
-            if disabled == nil and (ret.active == '1' or ret.active == '0') then
-                if ret.active == '1' then
-                    opt.disabled = tostring('0')
-                else
-                    opt.disabled = tostring('1')
-                end
-            end
-            if ret.mode ~= nil and (ret.mode == 'classic' or ret.mode == 'IPRB') then
-                set_service_mode(tostring(ret.mode))
-            end
-            set_IPRB_option(opt)
-
-            push_status_to_wb()
-        elseif ret.mode == 'classic' then
-            set_service_mode(tostring(ret.mode))
-        end
-
-    end
-end
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function snoop_response_access_by_code(resp)
-    local ok = false
-    local res_table
-    if resp.body ~= nil then
-        ok, res_table = pcall(cjson.decode, resp.body)
-    end
-    if not ok or res_table == nil then
-        return -1
-    end
-    if res_table ~= nil and res_table.info ~= nil and type(res_table.info) == "table" then
-        if res_table.info.verifyResult == nil or type(res_table.info.verifyResult) ~= "boolean" or res_table.info.verifyResult ~= true then
-            return -3
-        end
-    end
-
-    -- write configuration.
-    local opt = {}
-    opt.identity = "secondary"
-    opt.disabled = '0'
-    set_IPRB_option(opt)
-    push_status_to_wb()
-    return 0
-end
-
-local function snoop_response_get_access_code(resp)
-    local ok = false
-    local res_table
-    if resp.body then
-        ok, res_table = pcall(cjson.decode, resp.body)
-    end
-    if not ok or res_table == nil then
-        return -1
-    end
-    if res_table == nil or res_table.code == nil or res_table.code ~= 0 then
-        return -2
-    end
-
-    -- write configuration.
-    local opt = {}
-    opt.identity = "primary"
-
-    set_IPRB_option(opt)
-    return 0
-end
-
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
+-- 独立查询云端 simple，保留旧返回结构；不依赖 mpifd，不维护本地状态。
 --[[
     @method-type: call
     @method-name: get_node_info
@@ -2214,22 +2138,54 @@ end
     @out-example: {"id":15,"jsonrpc":"2.0","result":{"info":{"mode":"IPRB","use_exit":"0","active":"1","err_code":0,"identity":"primary","net_id":"7c3e7da5dc2413e8e8ff7f6bdde31cab"}}}
 --]]
 function M.get_node_info(params)
-    local ret
-    local resp = get_info_from_cloud()
-    if resp ~= nil and resp.err_code == 0 and resp.status_code ~= nil and resp.body ~= nil then
-        local opt = {
-            status_code = resp.status_code,
-            body = resp.body
-        }
-        ret = parse_response_identity_verification(opt)
-        if type(ret) ~= "table" then
-            return { err_code = -2, err_msg = "fail!" }
-        end
-        ret.sub_mode = nil
-    else
-        return { err_code = -1, err_msg = "fail!" }
+    local response = __raw_request({
+        req_method = 'POST', req_path = req_path.req_get_identity, req_body = {}
+    })
+    if type(response) ~= 'table' or response.err_code ~= 0 then
+        return { err_code = -1, err_msg = 'cloud_request_failed' }
     end
-    return { info = ret }
+    if response.status_code ~= 200 then
+        return { err_code = -1, err_msg = 'cloud_http_failed' }
+    end
+    if type(response.body) ~= 'string' then
+        return { err_code = -2, err_msg = 'invalid_cloud_response' }
+    end
+
+    local json = cjson.new()
+    json.decode_array_with_array_mt(true)
+    json.decode_invalid_numbers(false)
+    local ok, body = pcall(json.decode, response.body)
+    if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
+        not is_finite_number(body.code) then
+        return { err_code = -2, err_msg = 'invalid_cloud_response' }
+    end
+    if body.code ~= 0 then
+        return { err_code = -1, err_msg = 'cloud_business_failed' }
+    end
+    local info = body.info
+    if type(info) ~= 'table' or getmetatable(info) == cjson.array_mt then
+        return { err_code = -2, err_msg = 'invalid_simple_info' }
+    end
+
+    local result = { err_code = 0, mode = '', identity = '', active = '', net_id = '', use_exit = '' }
+    if type(info.networkId) == 'string' then
+        local net_id = info.networkId:match('^%s*(.-)%s*$')
+        if net_id:match('^%w+$') then result.net_id = net_id end
+    end
+    -- 仅按 networkPlan 前缀识别 IPRB，不再依赖 planCode 或 creationChannel。
+    if type(info.networkPlan) == 'string' and info.networkPlan ~= '' then
+        result.mode = info.networkPlan:sub(1, 4) == 'IPRB' and 'IPRB' or 'classic'
+    end
+    if result.mode == 'IPRB' then
+        if result.net_id == '' or type(info.primaryDevice) ~= 'boolean' or
+            type(info.enableStatus) ~= 'boolean' then
+            return { err_code = -2, err_msg = 'invalid_simple_info' }
+        end
+        result.identity = info.primaryDevice and 'primary' or 'secondary'
+        result.active = info.enableStatus and '1' or '0'
+        if not info.primaryDevice then result.use_exit = info.useInternetExit == true and '1' or '0' end
+    end
+    return { info = result }
 end
 
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
@@ -2245,116 +2201,64 @@ end
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "report_event_to_mptun",{"class":"cloud","msg":"cloud service closed","info":{"event_code":11}}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {} }
 --]]
+-- 保留事件入口兼容旧调用；cloud 启停事件不再控制 IPRB。
 function M.report_event_to_mptun(params)
     if params.class == nil or params.info == nil then
         return {}
     end
     local event_class = params.class
     local event_info = params.info
-    --local event_msg = params.msg or ''
     if event_class == 'cloud' then
         local code = event_info.event_code
         if code == nil or type(code) ~= 'number' then
             return {}
         end
-        if code == 11 then
-            -- code 11 is cloud service stoped.
-            local is_enable = IPRB_is_enabled() or false
-            if is_enable then
-                local c = uci.cursor()
-                -- stop mptun
-                c:set("mptun", "global", "enable", "0")
-                c:commit("mptun")
-                ngx.timer.at(2.0, function()
-                    ngx.pipe.spawn({ "/etc/init.d/mptun", "stop" }):wait()
-                end)
-            end
-        elseif code == 10 then
-            -- code 10 is cloud service restored.
-            local c = uci.cursor()
-            local service_mode = c:get("mptun", "global", "service_mode") or ''
-            local identity = c:get("mptun", "IPRB", "identity") or ''
-            if service_mode == "IPRB" then
-                if identity == 'primary' then
-                    __start_service()
-                elseif identity == 'secondary' then
-                    __start_connect()
-                end
-            end
+        if code == 10 or code == 11 then
+            return {}
         end
-    elseif event_class == 'network' and enable_extend_feature then
-        deal_network_event(event_info)
     end
     return {}
 end
 
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-local function pre_deal_aw_stop_by_cloud()
-    local c = uci.cursor()
-
-    local function read_ctx()
-        return {
-            service_mode = c:get("mptun", "global", "service_mode") or '',
-            identity = c:get("mptun", "IPRB", "identity") or '',
-            be_kicked_out = false,
-            attempt_to_be = c:get("mptun", "IPRB", "attempt_to_be") or '',
-        }
-    end
-
-    local ctx = read_ctx()
-
-    if ctx.service_mode == '' then
-        __get_IPRB_status()
-        c:load("mptun")
-        ctx = read_ctx()
-    end
-
-    local resolved_service_mode = ctx.service_mode
-    if ctx.service_mode == "IPRB" then
-        local identity = ctx.identity
-        c:set("mptun", "IPRB", "active", "0")
-        c:set("mptun", "IPRB", "state", "stoped")
-
-        local rpc_resp
-        local rpc_err_code
-        -- get_node_info failure indicates the local role has already lost its cloud-side network membership.
-        rpc_resp = M.get_node_info()
-        rpc_err_code = rpc_resp and rpc_resp.err_code and tonumber(rpc_resp.err_code)
-        --Failed to obtain IPRB information; indicates the user has been kicked out of the network.
-        if rpc_err_code ~= nil and rpc_err_code ~= -1 then
-            if identity == "primary" or identity == "secondary" then
-                c:set("mptun", "IPRB", "attempt_to_be", identity)
-                c:delete("mptun", "IPRB", "identity")
-            end
-            if identity == "secondary" then
-                c:set("mptun", "IPRB", "be_kicked_out", "1")
-                ctx.be_kicked_out = true
-            end
-            c:delete("mptun", "global", "service_mode")
-            c:set("mptun", "IPRB", "state", "unset")
-        end
-        c:commit("mptun")
-    end
-
-    ctx.should_clear_classic = resolved_service_mode ~= "IPRB"
-
-    return ctx
+-- 脚本运行状态增量只转发，字段校验、更新及变动通知由后台处理。
+function M.report_IPRB_runtime(params)
+    return iprb_backend_call('update_runtime', 5000, params)
 end
--- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
-function M.AW_net_stoped_by_cloud()
-    local c = uci.cursor()
-    local ctx = pre_deal_aw_stop_by_cloud()
-    debug_event_to_file(" into AW_net_stoped_by_cloud: service_mode: " .. tostring(ctx.service_mode) ..
-        " be_kicked_out: " .. tostring(ctx.be_kicked_out) ..
-        " attempt_to_be: " .. tostring(ctx.attempt_to_be) ..
-        " should_clear_classic: " .. tostring(ctx.should_clear_classic))
-    if ctx.should_clear_classic then
-        c:delete("mptun", "global", "service_mode")
-        c:commit("mptun")
-        notify_gl_cloud_module_detached()
+
+-- IPRB 配置接收事件仅转发，网络归属校验及保存由后台处理。
+function M.AW_net_config_received(params)
+    return iprb_backend_call('cloud_configured', 5000, params)
+end
+
+-- 有效 IPRB 交由后台处理；后台不可用或归属已清空时，仅回读 classic 模式。
+function M.AW_net_stoped_by_cloud(params)
+    -- 只读状态查询最多等待 5 秒；超时后回读本地模式。oui.ubus 单位为毫秒。
+    local result = iprb_backend_call('status', 5000)
+    if (result.err_code == nil or result.err_code == 0) and not result.error and
+        result.mode == 'IPRB' and type(result.status) == 'table' and
+        (result.status.identity == 'primary' or result.status.identity == 'secondary') then
+        -- 暂停或未连接仍是有效 IPRB，不以 enabled/connected 作为转发条件。
+        -- cloud_stopped 由后台负责查询 simple、更新状态及通知。
+        -- 缺失或类型错误的 ID 不补填；后台会忽略无有效归属的停止通知。
+        local network_id = type(params) == 'table' and params.network_id or nil
+        return iprb_backend_call('cloud_stopped', 60000, {
+            network_id = type(network_id) == 'string' and network_id or nil
+        })
     end
-    push_status_to_wb()
-    __push_global_summary_to_wb()
+
+    local c = uci.cursor()
+    local service_mode = c:get('mptun', 'global', 'service_mode')
+    if service_mode ~= 'classic' then
+        c:close()
+        return {}
+    end
+
+    -- classic 沿用原有清理；其余情况直接忽略，不借查询恢复模式或推断被踢。
+    c:delete('mptun', 'global', 'service_mode')
+    c:commit('mptun')
+    c:close()
+    notify_gl_cloud_module_detached()
+    return {}
 end
 
 --[[
@@ -2375,11 +2279,174 @@ function M.is_meet_startup_conditions()
     end
 end
 
-pre_req_func[req_path["req_get_identity"]] = pre_req_deal_identity_verification
-pre_req_func[req_path["req_get_access_code"]] = pre_req_get_access_code
-pre_req_func[req_path["req_access_by_code"]] = pre_req_access_by_code
-snoop_func[req_path["req_get_identity"]] = snoop_response_identity_verification
-snoop_func[req_path["req_access_by_code"]] = snoop_response_access_by_code
-snoop_func[req_path["req_get_access_code"]] = snoop_response_get_access_code
+-- Wi-Fi sync has no local cache or task state here. mpifd owns both.
+local function is_wifi_sync_array(value)
+    if type(value) ~= "table" then return false end
+    local count, max_index = 0, 0
+    for key in pairs(value) do
+        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then return false end
+        count = count + 1
+        if key > max_index then max_index = key end
+    end
+    return count == max_index
+end
+
+-- Rebuild public preview fields for both fetch and the cached status query.
+local function wifi_sync_preview(networks)
+    if not is_wifi_sync_array(networks) then return nil end
+    local preview = setmetatable({}, cjson.array_mt)
+    for _, group in ipairs(networks) do
+        if type(group) ~= "table" or type(group.network) ~= "string" or group.network == "" or
+            not is_wifi_sync_array(group.ifaces) then
+            return nil
+        end
+        local view = { network = group.network, ifaces = setmetatable({}, cjson.array_mt) }
+        for _, iface in ipairs(group.ifaces) do
+            if type(iface) ~= "table" or type(iface.band) ~= "string" or iface.band == "" or
+                type(iface.ssid) ~= "string" or type(iface.encryption) ~= "string" or
+                iface.encryption == "" or
+                (iface.key ~= nil and type(iface.key) ~= "string") or
+                (iface.encryption ~= "none" and type(iface.key) ~= "string") then
+                return nil
+            end
+            view.ifaces[#view.ifaces + 1] = {
+                band = iface.band, ssid = iface.ssid,
+                encryption = iface.encryption, key = iface.key
+            }
+        end
+        preview[#preview + 1] = view
+    end
+    return preview
+end
+
+--[[
+    @method-type: call
+    @method-name: fetch_wifi_config
+    @method-desc: fetch the primary's last successfully cached Wi-Fi configuration for preview without applying it
+    @out string version Version of the fetched snapshot, required when submitting a selection.
+    @out array networks Network groups included in the preview.
+    @out string networks[].network Network name: lan, guest, or iot.
+    @out array networks[].ifaces Wi-Fi interfaces in this network.
+    @out string networks[].ifaces[].band Wi-Fi band: 2g, 5g, or 6g.
+    @out string networks[].ifaces[].ssid Wi-Fi network name.
+    @out string networks[].ifaces[].encryption Wi-Fi encryption mode.
+    @out string ?networks[].ifaces[].key Wi-Fi password; omitted for open networks.
+    @out number ?err_code Error code when the request fails.
+    @out string ?err_msg Error message when the request fails.
+    @in-example: {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","fetch_wifi_config",{}]}
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{"version":"0123456789abcdef0123456789abcdef:1","networks":[{"network":"lan","ifaces":[{"band":"5g","ssid":"home","encryption":"psk2","key":"example-password"}]}]}}
+--]]
+function M.fetch_wifi_config()
+    -- oui.ubus uses yielding nginx sockets; Lua 5.1 cannot yield through pcall.
+    local result, err = ubus.call("mpifd.wifi_sync", "fetch", {})
+    if err ~= nil or type(result) ~= "table" then
+        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+    end
+    if result.err_code ~= nil then
+        local messages = {
+            busy = -2, fetch_failed = -1,
+            stopped = -1, request_failed = -1
+        }
+        local code = messages[result.err_msg]
+        if code and result.err_code == code then
+            return { err_code = code, err_msg = result.err_msg }
+        end
+        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+    end
+    if type(result.version) ~= "string" or result.version == "" or
+        not is_wifi_sync_array(result.networks) then
+        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+    end
+
+    local preview = wifi_sync_preview(result.networks)
+    if not preview then return { err_code = -1, err_msg = "wifi_sync_unavailable" } end
+    return { version = result.version, networks = preview }
+end
+
+--[[
+    @method-type: call
+    @method-name: get_wifi_sync_status
+    @method-desc: read the cached Wi-Fi preview and selections from wholly successful apply requests
+    @out string version Cached preview version; empty before the first successful fetch.
+    @out array networks Cached preview, with the same fields as fetch_wifi_config.
+    @out array applied Applied selections, containing only network and ifaces[].band.
+    @in-example: {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","get_wifi_sync_status",{}]}
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{"version":"","networks":[],"applied":[]}}
+--]]
+function M.get_wifi_sync_status()
+    local result, err = ubus.call("mpifd.wifi_sync", "status", {})
+    if err ~= nil or type(result) ~= "table" then
+        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+    end
+    if result.err_code ~= nil then
+        if result.err_code == -1 and (result.err_msg == "stopped" or result.err_msg == "request_failed") then
+            return { err_code = -1, err_msg = result.err_msg }
+        end
+        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+    end
+    if type(result.version) ~= "string" or not is_wifi_sync_array(result.applied) then
+        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+    end
+    local preview = wifi_sync_preview(result.networks)
+    if not preview then return { err_code = -1, err_msg = "wifi_sync_unavailable" } end
+    local applied = setmetatable({}, cjson.array_mt)
+    for _, group in ipairs(result.applied) do
+        if type(group) ~= "table" or type(group.network) ~= "string" or group.network == "" or
+            not is_wifi_sync_array(group.ifaces) or #group.ifaces == 0 then
+            return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+        end
+        local selected = { network = group.network, ifaces = setmetatable({}, cjson.array_mt) }
+        for _, iface in ipairs(group.ifaces) do
+            if type(iface) ~= "table" or type(iface.band) ~= "string" or iface.band == "" then
+                return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+            end
+            selected.ifaces[#selected.ifaces + 1] = { band = iface.band }
+        end
+        applied[#applied + 1] = selected
+    end
+    if result.version == "" and (#preview > 0 or #applied > 0) then
+        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+    end
+    return { version = result.version, networks = preview, applied = applied }
+end
+
+--[[
+    @method-type: call
+    @method-name: apply_wifi_config
+    @method-desc: apply selected preview entries to existing local Wi-Fi interfaces
+    @in string version Version returned by the fetch_wifi_config call used for this selection.
+    @in array networks Selected network groups with band entries from that preview; SSID and security settings come from the backend cache.
+    @in-example: {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","apply_wifi_config",{"version":"0123456789abcdef0123456789abcdef:1","networks":[{"network":"lan","ifaces":[{"band":"5g"}]}]}]}
+    @out number ?err_code Error code when the selection or application fails.
+    @out string ?err_msg Error message when the selection or application fails.
+    @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
+--]]
+function M.apply_wifi_config(params)
+    if type(params) ~= "table" or type(params.version) ~= "string" or
+        params.version == "" or type(params.networks) ~= "table" then
+        return { err_code = 1, err_msg = "invalid_selection" }
+    end
+    -- oui.ubus uses yielding nginx sockets; Lua 5.1 cannot yield through pcall.
+    local result, err = ubus.call("mpifd.wifi_sync", "apply", {
+        version = params.version,
+        networks = params.networks
+    })
+    if err ~= nil or type(result) ~= "table" then
+        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+    end
+    if result.err_code ~= nil then
+        local messages = {
+            busy = -2, fetch_required = 1, invalid_selection = 1,
+            apply_failed = -1, stopped = -1, request_failed = -1
+        }
+        local code = messages[result.err_msg]
+        if code and result.err_code == code then
+            return { err_code = code, err_msg = result.err_msg }
+        end
+        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+    end
+    if next(result) == nil then return result end
+    return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+end
 
 return M

@@ -9,8 +9,8 @@ function M.AW_global_summary()
     local mod = dofile('/usr/lib/oui-httpd/rpc/mptun')
     return mod.AW_get_global_summary()
 end
-function M.push_notification_msg()
+function M.speedtest_client_result()
     local mod = dofile('/usr/lib/oui-httpd/rpc/mptun')
-    return mod.AW_get_notice_msg()
+    return mod._speedtest_client.snapshot()
 end
 return M

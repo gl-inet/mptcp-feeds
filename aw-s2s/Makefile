@@ -12,6 +12,7 @@ define Package/$(PKG_NAME)
   SECTION:=base
   CATEGORY:=gl-sdk4
   TITLE:= AstroWarp s2s API
+  DEPENDS:=+nftables +kmod-nft-bridge
 endef
 
 Build/Compile=
@@ -23,6 +24,9 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_BIN) $(CURDIR)/files/get_mplinkip.sh $(1)/usr/bin/
 	$(INSTALL_BIN) $(CURDIR)/files/get_mpsrv_delay.sh $(1)/usr/bin/
 	$(INSTALL_BIN) $(CURDIR)/files/mptun_tools.sh $(1)/usr/bin/mptun_tools
+
+	$(INSTALL_DIR) $(1)/etc/gl-switch.d/
+	$(INSTALL_BIN) $(CURDIR)/files/goodpas-switch.sh $(1)/etc/gl-switch.d/GoodPAS.sh
 
 	$(INSTALL_DIR) $(1)/etc/mptun/
 	$(INSTALL_DATA) $(CURDIR)/files/dnsmasq.conf.mptun $(1)/etc/
