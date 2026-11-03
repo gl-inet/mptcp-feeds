@@ -11,7 +11,7 @@ get_IPRB_identity() {
     model="${model#"${model%%[![:space:]]*}"}"
     model="${model%"${model##*[![:space:]]}"}"
     case "$model" in
-        mt3000) echo secondary ;;
+        mt3000|be10000) echo secondary ;;
         mt6000) echo primary ;;
         *)
             echo "Empty or unsupported IPRB device model" >&2
@@ -44,7 +44,7 @@ DNS_MARK_MASK_REVERSE="$(printf '0x%x' $((~DNS_MARK & 0xffffffff)))"
 usage() {
     echo "Usage: mptun_tools <command> [arguments]
 Commands:
-    get_IPRB_identity          Print secondary for mt3000 or primary for mt6000
+    get_IPRB_identity          Print secondary for mt3000/be10000 or primary for mt6000
     mac_skip_policy <mac>      Skip mptun policy for the specified device
     mac_restore_policy <mac>   Restore mptun policy for the specified device
     skip_policy               Skip mptun policy for all devices
