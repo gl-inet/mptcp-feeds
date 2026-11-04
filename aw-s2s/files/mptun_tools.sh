@@ -11,7 +11,7 @@ get_IPRB_identity() {
     model="${model#"${model%%[![:space:]]*}"}"
     model="${model%"${model##*[![:space:]]}"}"
     case "$model" in
-        mt6000|be9300|be14000|x3000|xe3000|x2000|be6500|mt5000|ax1800) echo primary ;;
+        mt6000|be9300|be14000|x3000|xe3000|x2000|be6500|mt5000|ax1800|fn7200be) echo primary ;;
         *) echo secondary ;;
     esac
 }
