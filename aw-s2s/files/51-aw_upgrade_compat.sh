@@ -10,6 +10,18 @@ migrate_IPRB_sub_mode() {
     uci commit mptun
 }
 
+migrate_speedtest_type() {
+    local old_type="$(uci -q get mptun.global.speedtest_type)"
+    case "$old_type" in
+        iperf)
+            uci -q set mptun.global.speedtest_type='tunspeed'
+            uci -q set mptun.global.speedtest_port='7890'
+            uci commit mptun
+            ;;
+        *) return 0 ;;
+    esac
+}
+
 clear_resource_reported() {
     uci -q delete mptun.IPRB.resource_reported
     uci commit mptun
@@ -44,6 +56,7 @@ dns_mark="$(uci -q get mptun.global.dnsmark)"
     uci set firewall.dns_over_guest.mark="!$dns_mark/$dns_mark"
 
 migrate_IPRB_sub_mode
+migrate_speedtest_type
 
 clear_resource_reported
 

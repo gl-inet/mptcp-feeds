@@ -15,8 +15,8 @@ local M = {}
 local ERR_PARAMETER = 1
 local SPEEDTEST_INTERFACE = "mptun0"
 local DEFAULT_SPEEDTEST_ENABLE = "1"
-local DEFAULT_SPEEDTEST_TYPE = "iperf"
-local DEFAULT_SPEEDTEST_PORT = 5201
+local DEFAULT_SPEEDTEST_TYPE = "tunspeed"
+local DEFAULT_SPEEDTEST_PORT = 7890
 local SPEEDTEST_CLIENT_INFO_FILE = "/etc/mp_connection_info"
 local SPEEDTEST_CLIENT_UBUS_OBJECT = "mpifd.speedtest_client"
 local SPEEDTEST_CLIENT_WS_NAME = "mptun.speedtest_client_result"
@@ -103,7 +103,8 @@ local function is_valid_ipv4(ip)
 
     for _, octet in ipairs({ a, b, c, d }) do
         local value = tonumber(octet)
-        if value == nil or value < 0 or value > 255 then
+        if value == nil or value < 0 or value > 255 or #octet > 3 or
+            (#octet > 1 and octet:sub(1, 1) == '0') then
             return false
         end
     end
@@ -288,8 +289,12 @@ local function get_speedtest_options(c)
     end
 
     local activator_type = c:get("mptun", "global", "speedtest_type")
-    if activator_type ~= DEFAULT_SPEEDTEST_TYPE then
+    if activator_type == nil or activator_type == "" then
         activator_type = DEFAULT_SPEEDTEST_TYPE
+    elseif activator_type ~= DEFAULT_SPEEDTEST_TYPE then
+        -- Never advertise HTTP under an explicitly configured old/unknown type.
+        -- The upgrade script migrates the old iperf selection once.
+        enabled = "0"
     end
 
     local port_value = c:get("mptun", "global", "speedtest_port")
@@ -670,11 +675,11 @@ end
     @out number  endpoint.port TCP port of the endpoint.
 
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["","mptun","get_speedtest_info_list",{}]}
-    @out-example: {"jsonrpc":"2.0","id":1,"result":[{"interface":"mptun0","ip_address":"10.10.227.2","activator_type":"iperf","port":5201}]}
+    @out-example: {"jsonrpc":"2.0","id":1,"result":[{"interface":"mptun0","ip_address":"10.10.227.2","activator_type":"tunspeed","port":7890}]}
 
     An empty result means that aw-s2s currently publishes no speed-test
     configuration. This read-only method consumes no input parameters and does not
-    verify firewall, NFQUEUE, mpifd or iperf3 runtime state.
+    verify firewall, NFQUEUE, mpifd or tunspeed runtime state.
 --]]
 function M.get_speedtest_info_list()
     local c = uci.cursor()
@@ -710,7 +715,7 @@ end
 --[[
     @method-type: call
     @method-name: start_speedtest_client
-    @method-desc: start one asynchronous ping followed by an iperf3 upload test
+    @method-desc: start one asynchronous ping followed by a tunspeed HTTP upload test
 
     @out number  ?err_code Error code when the request cannot be accepted.
     @out string  ?err_msg Error message when the request cannot be accepted.

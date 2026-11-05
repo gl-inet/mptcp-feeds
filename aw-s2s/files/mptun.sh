@@ -310,21 +310,37 @@ normalize_speedtest_list()
 
 get_speedtest_ipv4()
 {
-    normalize_speedtest_list "$1" | tr ' ' '\n' | sed 's#/.*##' |
-        grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true
+    get_speedtest_source_ips "$1" | sed 's#/.*##' | head -n 1 || true
 }
 
 get_speedtest_source_ips()
 {
-    normalize_speedtest_list "$1" | tr ' ' '\n' |
-        grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$' || true
+    # Match mptun.lua's IPv4/CIDR validation before emitting firewall syntax.
+    normalize_speedtest_list "$1" | tr ' ' '\n' | awk '
+        function valid_ip(ip, octets, count, i) {
+            count = split(ip, octets, ".")
+            if (count != 4) return 0
+            for (i = 1; i <= 4; i++) {
+                if (octets[i] !~ /^[0-9]+$/ || length(octets[i]) > 3 || octets[i] + 0 > 255 ||
+                    (length(octets[i]) > 1 && substr(octets[i], 1, 1) == "0"))
+                    return 0
+            }
+            return 1
+        }
+        {
+            count = split($0, parts, "/")
+            if (count < 1 || count > 2 || !valid_ip(parts[1])) next
+            if (count == 2 && (parts[2] !~ /^[0-9]+$/ || parts[2] + 0 > 32)) next
+            print $0
+        }
+    '
 }
 
 init_speedtest_config()
 {
     local cfg="$1"
     local dev="$2"
-    local address_list source_ips speedtest_ip speedtest_port
+    local address_list source_ips speedtest_ip speedtest_port speedtest_type
 
     SPEEDTEST_ENABLED='0'
     SPEEDTEST_IP=''
@@ -335,6 +351,11 @@ init_speedtest_config()
     [ "$IPRB_identity" = 'primary' ] || return 0
     [ "$(uci -q get mptun.global.enable_speedtest)" != '0' ] || return 0
     [ "${dev:-mptun0}" = "$SPEEDTEST_INTERFACE" ] || return 0
+    speedtest_type="$(uci -q get mptun.global.speedtest_type)"
+    case "$speedtest_type" in
+        ''|tunspeed) ;;
+        *) return 0 ;;
+    esac
 
     address_list=$(jsonfilter -i "$cfg" -q -e '@.udpTun.interface.address')
     speedtest_ip="$(get_speedtest_ipv4 "$address_list")"
@@ -345,11 +366,11 @@ init_speedtest_config()
 
     speedtest_port="$(uci -q get mptun.global.speedtest_port)"
     case "$speedtest_port" in
-        ''|*[!0-9]*) speedtest_port='5201' ;;
+        ''|*[!0-9]*) speedtest_port='7890' ;;
         *)
             [ "$speedtest_port" -ge 1 ] 2>/dev/null &&
                 [ "$speedtest_port" -le 65535 ] 2>/dev/null ||
-                speedtest_port='5201'
+                speedtest_port='7890'
             ;;
     esac
 
@@ -611,12 +632,13 @@ set_firewall()
         uci set firewall.mptun2mptun.dest='mptun'
     }
 
-    # NFQUEUE handles the initial SYN; this rule permits the full connection
-    # after the userspace activator accepts it.
+    # tunspeed uses one TCP upload connection. Queue only its initial SYN;
+    # permit the full connection below for the configured tunnel sources.
+    # No HTTP data packets or extra control/data ports enter NFQUEUE.
     uci -q delete firewall.mptun_speedtest
     if [ "$SPEEDTEST_ENABLED" = '1' ]; then
         uci set firewall.mptun_speedtest='rule'
-        uci set firewall.mptun_speedtest.name='mptun speedtest'
+        uci set firewall.mptun_speedtest.name='mptun tunspeed'
         uci set firewall.mptun_speedtest.src='mptun'
         uci set firewall.mptun_speedtest.family='ipv4'
         uci set firewall.mptun_speedtest.proto='tcp'
@@ -1126,6 +1148,9 @@ clean_proxy() {
 }
 
 clean_udptun() {
+    local had_speedtest_rule
+    had_speedtest_rule="$(uci -q get firewall.mptun_speedtest)"
+    uci -q delete firewall.mptun_speedtest
     # Remove the speedtest trigger even if the switch is off or the zone is absent.
     if [ "${use_fw4}" = '1' ]; then
         nft flush chain ip mpnet SPEEDTEST_INPUT 2>/dev/null
@@ -1158,11 +1183,14 @@ clean_udptun() {
 
         uci -q del firewall.mptun_allowe_dns
         uci -q del firewall.mptun_allowe_aw_p2p
-        uci -q del firewall.mptun_speedtest
-
         uci commit firewall
         /etc/init.d/firewall reload 2>/dev/null
+        had_speedtest_rule=''
     }
+    if [ -n "$had_speedtest_rule" ]; then
+        uci commit firewall
+        /etc/init.d/firewall reload 2>/dev/null
+    fi
     [ -x /usr/bin/gl_block_wan_access_exit ] && {
         /usr/bin/gl_block_wan_access_exit down astrowarp >/dev/null 2>&1
     }
