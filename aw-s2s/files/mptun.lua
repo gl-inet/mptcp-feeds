@@ -80,8 +80,8 @@ local valid_query_and_body_params = {
     ["accessCode"] = "^[%w%_%-]+$",
     ["code"] = "^[%w%_%-]+$",
     ["networkId"] = "^%w+$",
-    ["clientAlias"] = "^[^%c]*$", -- 访问码别名与从站名称采用相同文本规则。
-    ["aliasName"] = "^[^%c]*$",   -- JSON 文本字段，允许中文和标点，不允许控制字符。
+    ["clientAlias"] = "^.*$", -- 名称原样透传；标准 RPC 单独限制 128 字节。
+    ["aliasName"] = "^.*$",   -- raw_request 不额外限制名称长度或字符。
     ["sort"] = "^[%w%_%-%,]+$",
     ["gatewayIp"] = "^[%d%.]+$",
     ["interfaceName"] = "^[%w%_%-%.]+$",
@@ -1271,10 +1271,10 @@ end
     @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
 --]]
 function M.IPRB_req_secondary_rename(params)
-    -- 1. 校验入参；目标 ID 不允许为空，名称按原文提交，不做隐式转换。
+    -- 1. 校验入参；目标 ID 不允许为空，名称最多 128 字节，允许空串，按原文提交。
     if type(params) ~= 'table' or type(params.secondaryId) ~= 'string' or
         not params.secondaryId:match('^[%w_%-]+$') or type(params.aliasName) ~= 'string' or
-        params.aliasName:find('%c') then
+        #params.aliasName > 128 then
         return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
     end
     local request = {
@@ -1525,10 +1525,10 @@ end
     @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
 --]]
 function M.IPRB_set_access_code_alias(params)
-    -- 1. 访问码非空；别名按 JSON 原文提交，空字符串表示清除。
+    -- 1. 访问码非空；别名最多 128 字节（非字符数），空串也原样提交云端。
     if type(params) ~= 'table' or type(params.dynamicCode) ~= 'string' or
         not params.dynamicCode:match('^[%w_%-]+$') or type(params.alias) ~= 'string' or
-        params.alias:find('%c') then
+        #params.alias > 128 then
         return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
     end
     local request = {
@@ -1888,7 +1888,8 @@ end
     @out-example: {"jsonrpc":"2.0","id":1,"result":{}}
 --]]
 function M.IPRB_set_primary_alias(params)
-    if type(params) ~= 'table' or type(params.networkId) ~= 'string' or type(params.alias) ~= 'string' then
+    if type(params) ~= 'table' or type(params.networkId) ~= 'string' or type(params.alias) ~= 'string' or
+        #params.alias > 128 then
         return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
     end
     return iprb_backend_call('set_primary_alias', 60000, { networkId = params.networkId, alias = params.alias })
