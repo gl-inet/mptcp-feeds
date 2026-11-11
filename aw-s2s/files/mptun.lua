@@ -12,6 +12,29 @@ local http = require "resty.http"
 
 local M = {}
 
+local ERROR_CODES = {
+    operation_failed = 10,
+    invalid_params = 11,
+    busy = 12,
+    state_not_allowed = 13,
+    state_changed = 14,
+    invalid_cloud_response = 15,
+    plan_expired = 200,
+    device_limit_exceeded = 201,
+    access_locked = 202,
+    access_verification_failed = 203,
+    kicked_out_cleanup_required = 204,
+    startup_conditions_not_met = 210,
+    upgrade_sync_pending = 211,
+    wifi_fetch_required = 220,
+    speedtest_target_unavailable = 230
+}
+
+local function get_error_code(name)
+    local DEFAULT_error_code = 10
+    return ERROR_CODES[name] or DEFAULT_error_code
+end
+
 local ERR_PARAMETER = 1
 local SPEEDTEST_INTERFACE = "mptun0"
 local DEFAULT_SPEEDTEST_ENABLE = "1"
@@ -147,19 +170,19 @@ local function normalize_speedtest_client_start_result(result)
 
     if result.err_code == -1 then
         return {
-            err_code = -1,
+            err_code = get_error_code('operation_failed'),
             err_msg = "invalid speedtest client target"
         }
     end
 
     if result.err_code == -2 then
         return {
-            err_code = -2,
+            err_code = get_error_code('busy'),
             err_msg = "speedtest client is running"
         }
     end
 
-    return speedtest_client_service_unavailable()
+    return { err_code = get_error_code('operation_failed'), err_msg = 'speedtest client service is unavailable' }
 end
 
 -- The backend owns the snapshot. Rebuild the public shape and preserve []
@@ -727,7 +750,7 @@ function M.start_speedtest_client()
     local address, port = get_speedtest_client_target(uci.cursor())
     if not address then
         return {
-            err_code = -1,
+            err_code = get_error_code('speedtest_target_unavailable'),
             err_msg = "speedtest client target is unavailable"
         }
     end
@@ -737,7 +760,7 @@ function M.start_speedtest_client()
         port = port
     })
     if err ~= nil then
-        return speedtest_client_service_unavailable()
+        return { err_code = get_error_code('operation_failed'), err_msg = 'speedtest client service is unavailable' }
     end
 
     -- ngx-ubus-proxy may decode an empty successful ubus reply as nil or
@@ -1200,13 +1223,13 @@ function M.IPRB_get_secondary_list()
     -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
     local response = __raw_request(request)
     if type(response) ~= 'table' or response.err_code ~= 0 then
-        return { err_code = -1, err_msg = 'cloud_request_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_request_failed' }
     end
     if response.status_code ~= 200 then
-        return { err_code = -7, err_msg = 'cloud_http_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_http_failed' }
     end
     if type(response.body) ~= 'string' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
 
     -- 3. 解析响应外层；使用独立解码器，保留数组类型且不改变全局设置。
@@ -1216,14 +1239,14 @@ function M.IPRB_get_secondary_list()
     local ok, body = pcall(json.decode, response.body)
     if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
         not is_finite_number(body.code) then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if body.code ~= 0 then
-        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_business_failed' }
     end
     local info = body.info
     if type(info) ~= 'table' or getmetatable(info) ~= cjson.array_mt then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
 
     -- 4. 逐条重建公开字段；优先使用有效的驼峰字段，再兼容下划线命名。
@@ -1275,7 +1298,7 @@ function M.IPRB_req_secondary_rename(params)
     if type(params) ~= 'table' or type(params.secondaryId) ~= 'string' or
         not params.secondaryId:match('^[%w_%-]+$') or type(params.aliasName) ~= 'string' or
         #params.aliasName > 128 then
-        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+        return { err_code = get_error_code('invalid_params'), err_msg = 'invalid_params' }
     end
     local request = {
         req_method = 'POST',
@@ -1286,13 +1309,13 @@ function M.IPRB_req_secondary_rename(params)
     -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
     local response = __raw_request(request)
     if type(response) ~= 'table' or response.err_code ~= 0 then
-        return { err_code = -1, err_msg = 'cloud_request_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_request_failed' }
     end
     if response.status_code ~= 200 then
-        return { err_code = -7, err_msg = 'cloud_http_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_http_failed' }
     end
     if type(response.body) ~= 'string' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
 
     -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
@@ -1302,19 +1325,19 @@ function M.IPRB_req_secondary_rename(params)
     local ok, body = pcall(json.decode, response.body)
     if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
         not is_finite_number(body.code) then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if body.code ~= 0 then
-        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_business_failed' }
     end
 
     -- 4. 设置接口必须明确成功；缺失、null、字符串和数字都不能代替布尔结果。
     local info = body.info
     if type(info) ~= 'boolean' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if not info then
-        return { err_code = -9, err_msg = 'secondary_rename_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'secondary_rename_failed' }
     end
 
     -- 5. 不修改本地状态；调用方可重新查询从站列表获取新名称。
@@ -1334,7 +1357,7 @@ function M.IPRB_req_remove_secondary(params)
     if type(params) ~= 'table' or type(params.secondaryId) ~= 'string' or
         not params.secondaryId:match('^[%w_%-]+$') or type(params.secondaryType) ~= 'string' or
         not params.secondaryType:match('^[%w_%-]+$') then
-        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+        return { err_code = get_error_code('invalid_params'), err_msg = 'invalid_params' }
     end
     local request = {
         req_method = 'POST',
@@ -1345,13 +1368,13 @@ function M.IPRB_req_remove_secondary(params)
     -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
     local response = __raw_request(request)
     if type(response) ~= 'table' or response.err_code ~= 0 then
-        return { err_code = -1, err_msg = 'cloud_request_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_request_failed' }
     end
     if response.status_code ~= 200 then
-        return { err_code = -7, err_msg = 'cloud_http_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_http_failed' }
     end
     if type(response.body) ~= 'string' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
 
     -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
@@ -1361,19 +1384,19 @@ function M.IPRB_req_remove_secondary(params)
     local ok, body = pcall(json.decode, response.body)
     if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
         not is_finite_number(body.code) then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if body.code ~= 0 then
-        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_business_failed' }
     end
 
     -- 4. 设置接口必须收到布尔 true，不能把缺失或异常结果当作成功。
     local info = body.info
     if type(info) ~= 'boolean' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if not info then
-        return { err_code = -9, err_msg = 'secondary_remove_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'secondary_remove_failed' }
     end
 
     -- 5. 只返回公开结果，不更新本机状态。
@@ -1398,13 +1421,13 @@ function M.IPRB_get_access_code_list()
     -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
     local response = __raw_request(request)
     if type(response) ~= 'table' or response.err_code ~= 0 then
-        return { err_code = -1, err_msg = 'cloud_request_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_request_failed' }
     end
     if response.status_code ~= 200 then
-        return { err_code = -7, err_msg = 'cloud_http_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_http_failed' }
     end
     if type(response.body) ~= 'string' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
 
     -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
@@ -1414,16 +1437,16 @@ function M.IPRB_get_access_code_list()
     local ok, body = pcall(json.decode, response.body)
     if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
         not is_finite_number(body.code) then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if body.code ~= 0 then
-        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_business_failed' }
     end
 
     -- 4. 两组列表必须有效；逐条重建公开字段，兼容下划线命名。
     local info = body.info
     if type(info) ~= 'table' or getmetatable(info) == cjson.array_mt then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     local result = {}
     local groups = { activeAccessCodes = 'active_access_codes', expiredAccessCodes = 'expired_access_codes' }
@@ -1431,7 +1454,7 @@ function M.IPRB_get_access_code_list()
         local list = info[field]
         if type(list) ~= 'table' or getmetatable(list) ~= cjson.array_mt then list = info[source] end
         if type(list) ~= 'table' or getmetatable(list) ~= cjson.array_mt then
-            return { err_code = -8, err_msg = 'invalid_cloud_response' }
+            return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
         end
         local entries = setmetatable({}, cjson.array_mt)
         for _, entry in ipairs(list) do
@@ -1477,13 +1500,13 @@ function M.IPRB_add_access_code()
     -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
     local response = __raw_request(request)
     if type(response) ~= 'table' or response.err_code ~= 0 then
-        return { err_code = -1, err_msg = 'cloud_request_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_request_failed' }
     end
     if response.status_code ~= 200 then
-        return { err_code = -7, err_msg = 'cloud_http_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_http_failed' }
     end
     if type(response.body) ~= 'string' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
 
     -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
@@ -1493,23 +1516,23 @@ function M.IPRB_add_access_code()
     local ok, body = pcall(json.decode, response.body)
     if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
         not is_finite_number(body.code) then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if body.code ~= 0 then
-        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_business_failed' }
     end
 
     -- 4. 新增操作必须取得有效访问码及有效期，不返回残缺的成功结果。
     local info = body.info
     if type(info) ~= 'table' or getmetatable(info) == cjson.array_mt then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     local code = info.dynamicCode
     if type(code) ~= 'string' or not code:match('^[%w_%-]+$') then code = info.dynamic_code end
     local duration = info.expirationRemainder
     if not is_finite_number(duration) then duration = info.expiration_remainder end
     if type(code) ~= 'string' or not code:match('^[%w_%-]+$') or not is_finite_number(duration) then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
 
     -- 5. 仅重建公开字段，有效期保持云端秒数，不做转换或补默认值。
@@ -1529,7 +1552,7 @@ function M.IPRB_set_access_code_alias(params)
     if type(params) ~= 'table' or type(params.dynamicCode) ~= 'string' or
         not params.dynamicCode:match('^[%w_%-]+$') or type(params.alias) ~= 'string' or
         #params.alias > 128 then
-        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+        return { err_code = get_error_code('invalid_params'), err_msg = 'invalid_params' }
     end
     local request = {
         req_method = 'PUT',
@@ -1540,13 +1563,13 @@ function M.IPRB_set_access_code_alias(params)
     -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
     local response = __raw_request(request)
     if type(response) ~= 'table' or response.err_code ~= 0 then
-        return { err_code = -1, err_msg = 'cloud_request_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_request_failed' }
     end
     if response.status_code ~= 200 then
-        return { err_code = -7, err_msg = 'cloud_http_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_http_failed' }
     end
     if type(response.body) ~= 'string' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
 
     -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
@@ -1556,19 +1579,19 @@ function M.IPRB_set_access_code_alias(params)
     local ok, body = pcall(json.decode, response.body)
     if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
         not is_finite_number(body.code) then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if body.code ~= 0 then
-        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_business_failed' }
     end
 
     -- 4. 设置接口必须收到布尔 true，不能把缺失或异常结果当作成功。
     local info = body.info
     if type(info) ~= 'boolean' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if not info then
-        return { err_code = -9, err_msg = 'access_code_alias_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'access_code_alias_failed' }
     end
 
     -- 5. 只返回公开结果，不更新本机状态。
@@ -1586,7 +1609,7 @@ function M.IPRB_delete_access_code(params)
     -- 1. 校验目标访问码，只提交云端要求的 code 字段。
     if type(params) ~= 'table' or type(params.dynamicCode) ~= 'string' or
         not params.dynamicCode:match('^[%w_%-]+$') then
-        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+        return { err_code = get_error_code('invalid_params'), err_msg = 'invalid_params' }
     end
     local request = {
         req_method = 'DELETE',
@@ -1597,13 +1620,13 @@ function M.IPRB_delete_access_code(params)
     -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
     local response = __raw_request(request)
     if type(response) ~= 'table' or response.err_code ~= 0 then
-        return { err_code = -1, err_msg = 'cloud_request_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_request_failed' }
     end
     if response.status_code ~= 200 then
-        return { err_code = -7, err_msg = 'cloud_http_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_http_failed' }
     end
     if type(response.body) ~= 'string' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
 
     -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
@@ -1613,19 +1636,19 @@ function M.IPRB_delete_access_code(params)
     local ok, body = pcall(json.decode, response.body)
     if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
         not is_finite_number(body.code) then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if body.code ~= 0 then
-        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_business_failed' }
     end
 
     -- 4. 设置接口必须收到布尔 true，不能把缺失或异常结果当作成功。
     local info = body.info
     if type(info) ~= 'boolean' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if not info then
-        return { err_code = -9, err_msg = 'access_code_delete_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'access_code_delete_failed' }
     end
 
     -- 5. 只返回公开结果，不更新本机状态。
@@ -1649,13 +1672,13 @@ function M.IPRB_clear_invalid_access_code()
     -- 2. 检查通信结果，错误由本接口处理，不透传底层返回表。
     local response = __raw_request(request)
     if type(response) ~= 'table' or response.err_code ~= 0 then
-        return { err_code = -1, err_msg = 'cloud_request_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_request_failed' }
     end
     if response.status_code ~= 200 then
-        return { err_code = -7, err_msg = 'cloud_http_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_http_failed' }
     end
     if type(response.body) ~= 'string' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
 
     -- 3. 解析响应外层；成功依赖 code 和执行结果，不依赖 msg 文本。
@@ -1665,19 +1688,19 @@ function M.IPRB_clear_invalid_access_code()
     local ok, body = pcall(json.decode, response.body)
     if not ok or type(body) ~= 'table' or getmetatable(body) == cjson.array_mt or
         not is_finite_number(body.code) then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if body.code ~= 0 then
-        return { err_code = -9, err_msg = 'cloud_business_failed', cloud_code = body.code }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'cloud_business_failed' }
     end
 
     -- 4. 设置接口必须收到布尔 true，不能把缺失或异常结果当作成功。
     local info = body.info
     if type(info) ~= 'boolean' then
-        return { err_code = -8, err_msg = 'invalid_cloud_response' }
+        return { err_code = get_error_code('invalid_cloud_response'), err_msg = 'invalid_cloud_response' }
     end
     if not info then
-        return { err_code = -9, err_msg = 'access_code_clear_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'access_code_clear_failed' }
     end
 
     -- 5. 只返回公开结果，不更新本机状态。
@@ -1803,14 +1826,35 @@ end
 function M.push_global_summary_to_wb()
     return __push_global_summary_to_wb()
 end
+-- Map only recognized backend reasons; never expose arbitrary backend messages.
+local IPRB_ERROR_NAMES = {
+    ['invalid_params'] = 'invalid_params',
+    ['busy'] = 'busy',
+    ['invalid identity'] = 'state_not_allowed',
+    ['not_initialized'] = 'state_not_allowed',
+    ['network_mismatch'] = 'state_changed',
+    ['net_version_mismatch'] = 'state_changed',
+    ['invalid_cloud_response'] = 'invalid_cloud_response',
+    ['invalid_access_response'] = 'invalid_cloud_response',
+    ['plan_expired'] = 'plan_expired',
+    ['device_limit_exceeded'] = 'device_limit_exceeded',
+    ['access_locked'] = 'access_locked',
+    ['access_verification_failed'] = 'access_verification_failed',
+    ['kicked_out_cleanup_required'] = 'kicked_out_cleanup_required'
+}
+
+local function iprb_error_name(reason)
+    return IPRB_ERROR_NAMES[reason] or 'operation_failed'
+end
+
 -- The backend owns persistence and cloud/local application. Notify only after
 -- it returns; a cloud failure does not undo an already saved local setting.
 local function control_secondary(method, params)
     if params ~= nil and (type(params) ~= 'table' or next(params) ~= nil) then
-        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+        return { err_code = get_error_code('invalid_params'), err_msg = 'invalid_params' }
     end
     if method == 'start_connect' and not __is_meet_startup_conditions() then
-        return { err_code = -3, err_msg = 'Startup conditions not met !' }
+        return { err_code = get_error_code('startup_conditions_not_met'), err_msg = 'Startup conditions not met !' }
     end
     local result = iprb_backend_call(method, 60000)
     local changed = result.changed
@@ -1818,6 +1862,10 @@ local function control_secondary(method, params)
     if changed or result.err_msg == 'iprb_backend_unavailable' then
         -- On timeout the operation may already have committed; query current state.
         push_status_to_wb()
+    end
+    if result.err_code ~= nil and result.err_code ~= 0 then
+        local name = iprb_error_name(result.err_msg)
+        return { err_code = get_error_code(name), err_msg = name }
     end
     return result
 end
@@ -1861,11 +1909,22 @@ end
 function M.IPRB_req_access_by_code(params)
     if type(params) ~= 'table' or type(params.dynamicCode) ~= 'string' or
         params.dynamicCode == '' then
-        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+        return { err_code = get_error_code('invalid_params'), err_msg = 'invalid_params' }
     end
     -- 后台完成云端验证、状态保存及通知；成功只表示入网请求已处理。
     -- Joining may also check startup conditions and pause before publishing status.
-    return iprb_backend_call('access_by_code', 90000, { dynamicCode = params.dynamicCode })
+    local result = iprb_backend_call('access_by_code', 90000, { dynamicCode = params.dynamicCode })
+    if result.err_code ~= nil and result.err_code ~= 0 then
+        local name = iprb_error_name(result.err_msg)
+        if name == 'access_locked' then
+            if not is_valid_positive_integer(result.lockTime) then
+                return { err_code = get_error_code('operation_failed'), err_msg = 'invalid_access_result' }
+            end
+            return { err_code = get_error_code(name), err_msg = name, lockTime = result.lockTime }
+        end
+        return { err_code = get_error_code(name), err_msg = name }
+    end
+    return result
 end
 
 function M.IPRB_secondary_start_connect(params)
@@ -1890,9 +1949,14 @@ end
 function M.IPRB_set_primary_alias(params)
     if type(params) ~= 'table' or type(params.networkId) ~= 'string' or type(params.alias) ~= 'string' or
         #params.alias > 128 then
-        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+        return { err_code = get_error_code('invalid_params'), err_msg = 'invalid_params' }
     end
-    return iprb_backend_call('set_primary_alias', 60000, { networkId = params.networkId, alias = params.alias })
+    local result = iprb_backend_call('set_primary_alias', 60000, { networkId = params.networkId, alias = params.alias })
+    if result.err_code ~= nil and result.err_code ~= 0 then
+        local name = iprb_error_name(result.err_msg)
+        return { err_code = get_error_code(name), err_msg = name }
+    end
+    return result
 end
 
 --[[
@@ -1908,9 +1972,14 @@ end
 --]]
 function M.set_IPRB_proxy_private_net(params)
     if type(params) ~= 'table' or type(params.enabled) ~= 'boolean' then
-        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+        return { err_code = get_error_code('invalid_params'), err_msg = 'invalid_params' }
     end
-    return iprb_backend_call('set_proxy_private_net', 60000, { enabled = params.enabled })
+    local result = iprb_backend_call('set_proxy_private_net', 60000, { enabled = params.enabled })
+    if result.err_code ~= nil and result.err_code ~= 0 then
+        local name = iprb_error_name(result.err_msg)
+        return { err_code = get_error_code(name), err_msg = name }
+    end
+    return result
 end
 --[[
     @method-type: call
@@ -1923,10 +1992,15 @@ end
 --]]
 function M.reset(params)
     if params ~= nil and (type(params) ~= 'table' or next(params) ~= nil) then
-        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+        return { err_code = get_error_code('invalid_params'), err_msg = 'invalid_params' }
     end
     -- 后台负责云端重置、本地清理、限时停止及通知；不以本地归属作为前置条件。
-    return iprb_backend_call('reset', 60000)
+    local result = iprb_backend_call('reset', 60000)
+    if result.err_code ~= nil and result.err_code ~= 0 then
+        local name = iprb_error_name(result.err_msg)
+        return { err_code = get_error_code(name), err_msg = name }
+    end
+    return result
 end
 
 --[[
@@ -1940,9 +2014,14 @@ end
 --]]
 function M.clean_kicked_out(params)
     if params ~= nil and (type(params) ~= 'table' or next(params) ~= nil) then
-        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+        return { err_code = get_error_code('invalid_params'), err_msg = 'invalid_params' }
     end
-    return iprb_backend_call('clean_kicked_out', 60000)
+    local result = iprb_backend_call('clean_kicked_out', 60000)
+    if result.err_code ~= nil and result.err_code ~= 0 then
+        local name = iprb_error_name(result.err_msg)
+        return { err_code = get_error_code(name), err_msg = name }
+    end
+    return result
 end
 
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
@@ -1957,13 +2036,13 @@ end
 --]]
 function M.get_started(params)
     if params ~= nil and (type(params) ~= 'table' or next(params) ~= nil) then
-        return { err_code = ERR_PARAMETER, err_msg = 'invalid_params' }
+        return { err_code = get_error_code('invalid_params'), err_msg = 'invalid_params' }
     end
 
     local c = uci.cursor()
     if not c:load('mptun') then
         c:close()
-        return { err_code = -1, err_msg = 'config_load_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'config_load_failed' }
     end
     -- 每秒重新读取升级恢复标记，最多等待 10 秒。
     for _ = 1, 10 do
@@ -1973,22 +2052,22 @@ function M.get_started(params)
         c = uci.cursor()
         if not c:load('mptun') then
             c:close()
-            return { err_code = -1, err_msg = 'config_load_failed' }
+            return { err_code = get_error_code('operation_failed'), err_msg = 'config_load_failed' }
         end
     end
     if c:get('mptun', 'global', 'need_sync') == '1' then
         c:close()
-        return { err_code = -1, err_msg = 'upgrade_sync_pending' }
+        return { err_code = get_error_code('upgrade_sync_pending'), err_msg = 'upgrade_sync_pending' }
     end
     local service_mode = c:get('mptun', 'global', 'service_mode') or ''
     if service_mode ~= '' and service_mode ~= 'IPRB' then
         c:close()
-        return { err_code = -1, err_msg = 'invalid_service_mode' }
+        return { err_code = get_error_code('state_not_allowed'), err_msg = 'invalid_service_mode' }
     end
     local net_id = c:get('mptun', 'IPRB', 'net_id') or ''
     if net_id ~= '' then
         c:close()
-        return { err_code = -2, err_msg = 'already_initialized' }
+        return { err_code = get_error_code('state_not_allowed'), err_msg = 'already_initialized' }
     end
 
     -- inited 表示配置已提交，不代表重启成功；重试时跳过已完成的配置阶段。
@@ -1998,7 +2077,7 @@ function M.get_started(params)
             { stdout_read_timeout = 5000, wait_timeout = 5000 })
         if not process then
             c:close()
-            return { err_code = -1, err_msg = 'get_identity_failed' }
+            return { err_code = get_error_code('operation_failed'), err_msg = 'get_identity_failed' }
         end
         local output = process:stdout_read_all()
         if not output and process.kill then process:kill(9) end
@@ -2006,23 +2085,23 @@ function M.get_started(params)
         local identity = output and output:match('^%s*(.-)%s*$')
         if identity ~= 'primary' and identity ~= 'secondary' then
             c:close()
-            return { err_code = -1, err_msg = 'get_identity_failed' }
+            return { err_code = get_error_code('operation_failed'), err_msg = 'get_identity_failed' }
         end
 
         -- 身份和初始化标志一起提交，其他已有配置保留。
         if not c:get('mptun', 'IPRB') and not c:set('mptun', 'IPRB', 'service_instance') then
             c:close()
-            return { err_code = -1, err_msg = 'config_write_failed' }
+            return { err_code = get_error_code('operation_failed'), err_msg = 'config_write_failed' }
         end
         if not c:set('mptun', 'global', 'service_mode', 'IPRB') or
             not c:set('mptun', 'IPRB', 'identity', identity) or
             not c:set('mptun', 'IPRB', 'inited', '1') then
             c:close()
-            return { err_code = -1, err_msg = 'config_write_failed' }
+            return { err_code = get_error_code('operation_failed'), err_msg = 'config_write_failed' }
         end
         if not c:commit('mptun') then
             c:close()
-            return { err_code = -1, err_msg = 'config_commit_failed' }
+            return { err_code = get_error_code('operation_failed'), err_msg = 'config_commit_failed' }
         end
     end
     c:close()
@@ -2033,13 +2112,13 @@ function M.get_started(params)
         "/etc/init.d/mpifd restart >/dev/null 2>&1 && printf 'mpifd_restarted\\n'"
     }, { stdout_read_timeout = 30000, wait_timeout = 30000 })
     if not process then
-        return { err_code = -1, err_msg = 'mpifd_restart_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'mpifd_restart_failed' }
     end
     local output = process:stdout_read_all()
     if not output and process.kill then process:kill(9) end
     process:wait()
     if output ~= 'mpifd_restarted\n' then
-        return { err_code = -1, err_msg = 'mpifd_restart_failed' }
+        return { err_code = get_error_code('operation_failed'), err_msg = 'mpifd_restart_failed' }
     end
     return {}
 end
@@ -2356,7 +2435,7 @@ function M.fetch_wifi_config()
     -- oui.ubus uses yielding nginx sockets; Lua 5.1 cannot yield through pcall.
     local result, err = ubus.call("mpifd.wifi_sync", "fetch", {})
     if err ~= nil or type(result) ~= "table" then
-        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+        return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
     end
     if result.err_code ~= nil then
         local messages = {
@@ -2365,17 +2444,19 @@ function M.fetch_wifi_config()
         }
         local code = messages[result.err_msg]
         if code and result.err_code == code then
-            return { err_code = code, err_msg = result.err_msg }
+            local name = 'operation_failed'
+            if result.err_msg == 'busy' then name = 'busy' end
+            return { err_code = get_error_code(name), err_msg = result.err_msg }
         end
-        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+        return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
     end
     if type(result.version) ~= "string" or result.version == "" or
         not is_wifi_sync_array(result.networks) then
-        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+        return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
     end
 
     local preview = wifi_sync_preview(result.networks)
-    if not preview then return { err_code = -1, err_msg = "wifi_sync_unavailable" } end
+    if not preview then return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" } end
     return { version = result.version, networks = preview }
 end
 
@@ -2392,36 +2473,36 @@ end
 function M.get_wifi_sync_status()
     local result, err = ubus.call("mpifd.wifi_sync", "status", {})
     if err ~= nil or type(result) ~= "table" then
-        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+        return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
     end
     if result.err_code ~= nil then
         if result.err_code == -1 and (result.err_msg == "stopped" or result.err_msg == "request_failed") then
-            return { err_code = -1, err_msg = result.err_msg }
+            return { err_code = get_error_code('operation_failed'), err_msg = result.err_msg }
         end
-        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+        return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
     end
     if type(result.version) ~= "string" or not is_wifi_sync_array(result.applied) then
-        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+        return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
     end
     local preview = wifi_sync_preview(result.networks)
-    if not preview then return { err_code = -1, err_msg = "wifi_sync_unavailable" } end
+    if not preview then return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" } end
     local applied = setmetatable({}, cjson.array_mt)
     for _, group in ipairs(result.applied) do
         if type(group) ~= "table" or type(group.network) ~= "string" or group.network == "" or
             not is_wifi_sync_array(group.ifaces) or #group.ifaces == 0 then
-            return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+            return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
         end
         local selected = { network = group.network, ifaces = setmetatable({}, cjson.array_mt) }
         for _, iface in ipairs(group.ifaces) do
             if type(iface) ~= "table" or type(iface.band) ~= "string" or iface.band == "" then
-                return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+                return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
             end
             selected.ifaces[#selected.ifaces + 1] = { band = iface.band }
         end
         applied[#applied + 1] = selected
     end
     if result.version == "" and (#preview > 0 or #applied > 0) then
-        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+        return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
     end
     return { version = result.version, networks = preview, applied = applied }
 end
@@ -2440,7 +2521,7 @@ end
 function M.apply_wifi_config(params)
     if type(params) ~= "table" or type(params.version) ~= "string" or
         params.version == "" or type(params.networks) ~= "table" then
-        return { err_code = 1, err_msg = "invalid_selection" }
+        return { err_code = get_error_code('invalid_params'), err_msg = "invalid_selection" }
     end
     -- oui.ubus uses yielding nginx sockets; Lua 5.1 cannot yield through pcall.
     local result, err = ubus.call("mpifd.wifi_sync", "apply", {
@@ -2448,21 +2529,26 @@ function M.apply_wifi_config(params)
         networks = params.networks
     })
     if err ~= nil or type(result) ~= "table" then
-        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+        return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
     end
     if result.err_code ~= nil then
         local messages = {
-            busy = -2, fetch_required = 1, invalid_selection = 1,
+            busy = -2, fetch_required = 1, version_mismatch = 1, invalid_selection = 1,
             apply_failed = -1, stopped = -1, request_failed = -1
         }
         local code = messages[result.err_msg]
         if code and result.err_code == code then
-            return { err_code = code, err_msg = result.err_msg }
+            local name = 'operation_failed'
+            if result.err_msg == 'busy' then name = 'busy'
+            elseif result.err_msg == 'fetch_required' or result.err_msg == 'version_mismatch' then
+                name = 'wifi_fetch_required'
+            elseif result.err_msg == 'invalid_selection' then name = 'invalid_params' end
+            return { err_code = get_error_code(name), err_msg = result.err_msg }
         end
-        return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+        return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
     end
     if next(result) == nil then return result end
-    return { err_code = -1, err_msg = "wifi_sync_unavailable" }
+    return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
 end
 
 return M
