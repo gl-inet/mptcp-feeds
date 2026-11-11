@@ -2197,18 +2197,18 @@ end
 -- This function updates /etc/config/mptun, so subsequent processes may require reloading it.
 --[[
     @method-type: call
-    @method-name: report_event_to_mptun
+    @method-name: notify_event
     @method-desc: The mptun module is notified that certain events have occurred.
-    @in string      class       Event Type
+    @in string      class       Event Type (cloud, mesh)
     @in string      msg         Brief description of the event
-    @in object      info        Detailed information about the relevant events
+    @in object      info        Detailed event information; mesh event_code=10 indicates Mesh Node mode is enabled
     @out number     ?err_code   Error Code
     @out string     ?err_msg    Error Message
-    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "report_event_to_mptun",{"class":"cloud","msg":"cloud service closed","info":{"event_code":11}}]}
+    @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "notify_event",{"class":"cloud","msg":"cloud service closed","info":{"event_code":11}}]}
     @out-example: {"jsonrpc": "2.0", "id": 1, "result": {} }
 --]]
 -- 保留事件入口兼容旧调用；cloud 启停事件不再控制 IPRB。
-function M.report_event_to_mptun(params)
+function M.notify_event(params)
     if params.class == nil or params.info == nil then
         return {}
     end
@@ -2222,9 +2222,19 @@ function M.report_event_to_mptun(params)
         if code == 10 or code == 11 then
             return {}
         end
+    elseif event_class == 'mesh' then
+        local code = event_info.event_code
+        if code == 10 then
+            -- Mesh Node 模式已开启，直接关闭本地 IPRB 和 mptun。
+            iprb_backend_call('force_disable_mptun', 2000)
+            return {}
+        end
     end
     return {}
 end
+
+-- 兼容旧 RPC 名称，与 notify_event 共用同一实现。
+M.report_event_to_mptun = M.notify_event
 
 -- 脚本运行状态增量只转发，字段校验、更新及变动通知由后台处理。
 function M.report_IPRB_runtime(params)
