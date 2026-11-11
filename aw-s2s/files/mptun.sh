@@ -125,14 +125,19 @@ load_IPRB_config() {
     fi
     [ "$service_mode" = 'IPRB' ] || return 0
 
-    iprb_status="$(ubus -t 5 call gl-session call '{"module":"mptun","func":"get_IPRB_status","params":{}}' 2>/dev/null)"
+    iprb_status="$(ubus -t 5 call gl-session call '{"module":"mptun","func":"get_IPRB_status","params":{}}' 2>/dev/null)" || {
+        logger -t mptun 'failed to get IPRB status'
+        return 1
+    }
     IPRB_identity="$(jsonfilter -s "$iprb_status" -e '@.result.status.identity' 2>/dev/null)"
     IPRB_enabled="$(jsonfilter -s "$iprb_status" -e '@.result.status.enabled' 2>/dev/null)"
-    if [ -z "$IPRB_identity" ] || [ "$IPRB_enabled" != '0' -a "$IPRB_enabled" != '1' ]; then
+    if [ "$IPRB_identity" != 'primary' -a "$IPRB_identity" != 'secondary' ] || [ "$IPRB_enabled" != '0' -a "$IPRB_enabled" != '1' ]; then
         logger -t mptun 'failed to get IPRB status'
         return 1
     fi
-    if [ "$(jsonfilter -s "$iprb_status" -e '@.result.status.data.proxy_private_net' 2>/dev/null)" = 'true' ]; then
+    # A valid secondary status defaults to enabled; only false disables it.
+    if [ "$IPRB_identity" = 'secondary' ] &&
+        [ "$(jsonfilter -s "$iprb_status" -e '@.result.status.data.proxy_private_net' 2>/dev/null)" != 'false' ]; then
         proxy_private_net='1'
     fi
     return 0

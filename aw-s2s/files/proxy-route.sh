@@ -3,10 +3,12 @@
 set_route() {
     local service_mode="$(uci -q get mptun.global.service_mode)"
     local proxy_private_net='0'
-    if [ "$service_mode" = 'IPRB' ]; then
+    if [ "$service_mode" = 'IPRB' ] &&
+        [ "$(uci -q get mptun.IPRB.identity)" = 'secondary' ]; then
         proxy_private_net="$(uci -q get mptun.IPRB.proxy_private_net)"
+        # An unset option defaults to enabled; only zero disables it.
+        [ "$proxy_private_net" = '0' ] || proxy_private_net='1'
     fi
-    [ "$proxy_private_net" = '1' ] || proxy_private_net='0'
 
     local tcpmark="$(uci -q get mptun.global.tcpmark || echo 0x1)"
     ip rule del pref 10 2>/dev/null
