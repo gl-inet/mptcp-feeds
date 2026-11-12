@@ -2418,7 +2418,7 @@ end
     @method-type: call
     @method-name: fetch_wifi_config
     @method-desc: fetch the primary's last successfully cached Wi-Fi configuration for preview without applying it
-    @out string version Version of the fetched snapshot, required when submitting a selection.
+    @out string version Version of the fetched snapshot, required when submitting a selection; empty when fetching fails.
     @out array networks Network groups included in the preview.
     @out string networks[].network Network name: lan, guest, or iot.
     @out array networks[].ifaces Wi-Fi interfaces in this network.
@@ -2438,8 +2438,13 @@ function M.fetch_wifi_config()
         return { err_code = get_error_code('operation_failed'), err_msg = "wifi_sync_unavailable" }
     end
     if result.err_code ~= nil then
+        -- 部分机型不支持 Wi-Fi 同步，未开放对端接口；获取失败统一返回空预览，避免前端报错。
+        -- fetch_failed 也包含网络异常；此处仅转换响应，不清除后台缓存，其他错误仍正常返回。
+        if result.err_code == -1 and result.err_msg == 'fetch_failed' then
+            return { version = '', networks = setmetatable({}, cjson.array_mt) }
+        end
         local messages = {
-            busy = -2, fetch_failed = -1,
+            busy = -2,
             stopped = -1, request_failed = -1
         }
         local code = messages[result.err_msg]
