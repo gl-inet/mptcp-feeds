@@ -2187,7 +2187,9 @@ function M.sync_IPRB_config()
         if info.primaryDevice ~= nil and info.primaryDevice ~= cjson.null then
             c:set('mptun', 'IPRB', 'identity', info.primaryDevice and 'primary' or 'secondary')
         end
-        if info.enableStatus ~= nil and info.enableStatus ~= cjson.null then
+        if info.primaryDevice == true then
+            c:set('mptun', 'IPRB', 'disabled', '0')
+        elseif info.enableStatus ~= nil and info.enableStatus ~= cjson.null then
             c:set('mptun', 'IPRB', 'disabled', info.enableStatus and '0' or '1')
         end
         c:set('mptun', 'IPRB', 'inited', '1')
