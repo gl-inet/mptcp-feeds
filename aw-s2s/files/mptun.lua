@@ -466,6 +466,16 @@ local function notify_gl_cloud_module_detached()
     })
 end
 
+-- mpifd reset 的尽力通知入口；通知失败不影响 reset 主流程。
+function M.notify_gl_cloud_module_detached(params)
+    if params ~= nil and (type(params) ~= 'table' or next(params) ~= nil) then
+        return { err_code = -1, err_msg = 'invalid_params' }
+    end
+    local _, err = notify_gl_cloud_module_detached()
+    if err then ngx.log(ngx.ERR, 'mptun detach notification failed: ', err) end
+    return {}
+end
+
 local function net_topology_is_exist()
     for _ = 1, 15 do
         if fs.access('/etc/mptun/mpnet_conf') then
@@ -2336,7 +2346,7 @@ function M.AW_net_config_received(params)
     return iprb_backend_call('cloud_configured', 5000, params)
 end
 
--- 有效 IPRB 交由后台处理；后台不可用或归属已清空时，仅回读 classic 模式。
+-- 有效 IPRB 交由后台处理；后台不可用或状态无效时回读本地模式。
 function M.AW_net_stoped_by_cloud(params)
     -- 只读状态查询最多等待 5 秒；超时后回读本地模式。oui.ubus 单位为毫秒。
     local result = iprb_backend_call('status', 5000)
@@ -2354,14 +2364,16 @@ function M.AW_net_stoped_by_cloud(params)
 
     local c = uci.cursor()
     local service_mode = c:get('mptun', 'global', 'service_mode')
-    if service_mode ~= 'classic' then
+    if service_mode == 'IPRB' then
         c:close()
         return {}
     end
 
-    -- classic 沿用原有清理；其余情况直接忽略，不借查询恢复模式或推断被踢。
-    c:delete('mptun', 'global', 'service_mode')
-    c:commit('mptun')
+    if service_mode == 'classic' then
+        -- classic 沿用原有清理；其他模式保留本地配置，但仍通知 cloud 模块解绑。
+        c:delete('mptun', 'global', 'service_mode')
+        c:commit('mptun')
+    end
     c:close()
     notify_gl_cloud_module_detached()
     return {}
