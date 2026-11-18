@@ -2282,7 +2282,7 @@ end
     @method-desc: The mptun module is notified that certain events have occurred.
     @in string      class       Event Type (cloud, mesh)
     @in string      msg         Brief description of the event
-    @in object      info        Detailed event information; mesh event_code=10 indicates Mesh Node mode is enabled
+    @in object      info        Detailed event information; mesh event_code=10 enables Mesh Node mode, event_code=11 exits it
     @out number     ?err_code   Error Code
     @out string     ?err_msg    Error Message
     @in-example:  {"jsonrpc":"2.0","id":1,"method":"call","params":["", "mptun", "notify_event",{"class":"cloud","msg":"cloud service closed","info":{"event_code":11}}]}
@@ -2308,6 +2308,15 @@ function M.notify_event(params)
         if code == 10 then
             -- Mesh Node 模式已开启，直接关闭本地 IPRB 和 mptun。
             iprb_backend_call('force_disable_mptun', 2000)
+            return {}
+        elseif code == 11 then
+            -- Mesh Node 模式已退出，仅恢复被 Mesh Node 关闭的主站 IPRB。
+            local status = iprb_backend_call('status', 2000)
+            if status.err_code or status.mode ~= 'IPRB' or type(status.status) ~= 'table' or
+                status.status.identity ~= 'primary' or status.status.enabled ~= '0' then
+                return {}
+            end
+            iprb_backend_call('force_enable_mptun', 2000)
             return {}
         end
     end
