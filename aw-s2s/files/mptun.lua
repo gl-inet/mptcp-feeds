@@ -2310,6 +2310,11 @@ function M.notify_event(params)
         if code == nil or type(code) ~= 'number' then
             return {}
         end
+        if code == 13 then
+            -- Cloud 上线后只通知 mpifd 安排一次 IPRB 同步。
+            iprb_backend_call('cloud_online', 2000)
+            return {}
+        end
         if code == 10 or code == 11 then
             return {}
         end
